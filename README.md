@@ -1,16 +1,12 @@
 # ai schedular
 
-![Calendar redesign preview](docs/screenshots/calendar-redesign.jpg)
+A local scheduling app for goals, tasks, routines, and calendar planning. Gemini interprets requests, OR-Tools schedules work, and PostgreSQL stores your plan.
 
-*Calendar redesign preview.*
+[Setup](#local-setup-docker-compose) · [Features](#features) · [Screenshots](#screenshots) · [Architecture](#architecture) · [Limitations](#current-limits-and-future-work)
 
-ai schedular turns goals, deadlines and routines into workable plans, then helps you adjust when life changes. Gemini interprets requests into validated actions; a deterministic OR-Tools constraint model chooses actual session times. A native Windows companion can provide uncertain activity evidence for user-confirmed rescheduling.
+![Dark calendar redesign with sidebar navigation and assistant panel](docs/screenshots/calendar-redesign.jpg)
 
-A local-first, single-user portfolio project. No cloud hosting, queues or deployment infrastructure.
-
-![Actual desktop dashboard using sample data](docs/screenshots/dashboard.png)
-
-![Calendar view using sample data](docs/screenshots/calendar.png)
+*Design preview from the separate calendar frontend. The app in this repository currently uses the interface shown in [Screenshots](#screenshots).*
 
 ## Features
 
@@ -242,11 +238,28 @@ CI runs backend tests, real PostgreSQL migrations and persistence, frontend chec
 
 ## Screenshots
 
-Captured from the launched application using actual persisted sample data, never fabricated:
+The current interface with persisted sample data. These captures predate the rename and show the previous branding.
 
-- [Dashboard](docs/screenshots/dashboard.png)
-- [Week calendar](docs/screenshots/calendar.png)
-- [Mobile dashboard](docs/screenshots/mobile.png)
+<details>
+<summary>Dashboard</summary>
+
+![Dashboard with planning overview and tasks](docs/screenshots/dashboard.png)
+
+</details>
+
+<details>
+<summary>Week calendar</summary>
+
+![Week calendar showing scheduled tasks and fixed obligations](docs/screenshots/calendar.png)
+
+</details>
+
+<details>
+<summary>Mobile dashboard</summary>
+
+<img src="docs/screenshots/mobile.png" alt="Mobile dashboard" width="390" />
+
+</details>
 
 ## Current limits and future work
 
