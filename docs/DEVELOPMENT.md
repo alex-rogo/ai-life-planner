@@ -156,4 +156,3 @@ To verify native HTTP ingestion without monitoring any real activity:
 This starts a temporary loopback backend/database and sends a synthetic unknown event. For a real PostgreSQL smoke test, migrate and seed a disposable PostgreSQL database, then run `python scripts/postgres_smoke.py` from `backend`.
 
 CI runs backend tests, real PostgreSQL migrations and persistence, frontend checks/build, browser workflows and the Windows native build/CTest. Test results recorded in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) are local observations; CI itself has not been executed on GitHub yet.
-

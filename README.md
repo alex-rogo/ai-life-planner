@@ -4,7 +4,7 @@ Plan tasks, routines, and deadlines in one calendar. Generate a schedule with AI
 
 ![Calendar redesign preview](docs/screenshots/calendar-redesign.jpg)
 
-*Design preview from the separate calendar frontend; this repository's interface differs.*
+*This dark interface is implemented in [ai-scheduler](https://github.com/alex-rogo/ai-scheduler). It has not been ported to this repository, which currently uses a light interface.*
 
 ## Features
 
@@ -43,9 +43,26 @@ GEMINI_MODEL=gemini-2.5-flash
 
 Then run `docker compose up -d --force-recreate backend`. Keep API keys out of Git.
 
-## How it works
+## Architecture
 
-Next.js provides the interface, FastAPI handles requests, and PostgreSQL stores your data. Gemini interprets chat requests; OR-Tools chooses schedule times. The optional C++ Windows companion suggests changes that you confirm.
+```mermaid
+flowchart TD
+    Web[Next.js interface] --> API[FastAPI]
+    API --> Actions[Validate and apply actions]
+    Actions <--> Gemini[Gemini: interpret requests]
+    Actions --> Solver[OR-Tools: schedule tasks]
+    Actions --> DB[(PostgreSQL)]
+    Solver --> DB
+    API --> DB
+    Agent[Optional Windows companion] --> Activity[Activity suggestions]
+    Activity --> DB
+    Activity --> Confirm[User confirmation]
+    Confirm --> Actions
+```
+
+Gemini interprets requests; OR-Tools chooses feasible times. FastAPI validates changes and saves them in PostgreSQL. Activity suggestions require your confirmation before replanning.
+
+See [architecture details](docs/ARCHITECTURE.md).
 
 ## Limitations
 
