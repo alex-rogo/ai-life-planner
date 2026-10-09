@@ -1,5 +1,9 @@
 # ai schedular
 
+![Calendar redesign preview](docs/screenshots/calendar-redesign.jpg)
+
+*Calendar redesign preview.*
+
 ai schedular turns goals, deadlines and routines into workable plans, then helps you adjust when life changes. Gemini interprets requests into validated actions; a deterministic OR-Tools constraint model chooses actual session times. A native Windows companion can provide uncertain activity evidence for user-confirmed rescheduling.
 
 A local-first, single-user portfolio project. No cloud hosting, queues or deployment infrastructure.
