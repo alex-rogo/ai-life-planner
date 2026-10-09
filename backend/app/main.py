@@ -40,7 +40,7 @@ from app.services.ai.pipeline import execute_chat
 from app.services.scheduler import generate_plan
 
 app = FastAPI(
-    title="ai schedular",
+    title="AI Planner",
     version="0.1.0",
     description="Local-first scheduling. Gemini interprets; CP-SAT plans.",
 )

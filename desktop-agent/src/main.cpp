@@ -19,7 +19,7 @@ BOOL WINAPI stop(DWORD signal) {
     return FALSE;
 }
 void usage() {
-    std::cout << "ai schedular Windows companion\n"
+    std::cout << "AI Planner Windows companion\n"
               << "  --enable              Explicitly opt into foreground-app and idle sampling\n"
               << "  --backend URL         HTTP loopback URL (default http://127.0.0.1:8000)\n"
               << "  --idle-seconds N      Idle threshold, 30-3600 (default 300)\n"
