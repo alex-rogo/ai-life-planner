@@ -14,7 +14,7 @@ try {
   await page.screenshot({ path: path.join(directory, "mobile.png"), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("http://127.0.0.1:3000/calendar");
-  await page.getByRole("button", { name: "Generate plan" }).waitFor();
+  await page.getByRole("button", { name: "Plan schedule" }).waitFor();
   await page.locator(".calendar-day").first().waitFor();
   await page.screenshot({ path: path.join(directory, "calendar.png"), fullPage: true });
   console.log("Captured current persisted sample data. No display or clock data was fabricated.");

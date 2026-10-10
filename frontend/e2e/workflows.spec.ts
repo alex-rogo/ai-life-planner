@@ -17,8 +17,8 @@ test("real API: goal through chat, calendar, CRUD and responsive dashboard", asy
   await page.getByRole("button", { name: "Create task", exact: true }).click();
   await expect(page.locator(".task-row").filter({ hasText: taskName })).toBeVisible();
   await page.goto("/calendar");
-  await expect(page.getByRole("button", { name: "Generate plan" })).toBeVisible();
-  await page.getByRole("button", { name: "Generate plan" }).click();
+  await expect(page.getByRole("button", { name: "Plan schedule" })).toBeVisible();
+  await page.getByRole("button", { name: "Plan schedule" }).click();
   await expect(page.getByRole("status")).toContainText("Plan updated", { timeout: 45000 });
   await page.getByRole("button", { name: "Week", exact: true }).click();
   await expect(page.locator(".calendar-event").first()).toBeVisible();
@@ -38,7 +38,8 @@ test("real API: goal through chat, calendar, CRUD and responsive dashboard", asy
   expect(rowsDoNotOverlap).toBe(true);
   await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(page.getByRole("button", { name: "Generate plan" })).toBeVisible();
+  await page.getByRole("link", { name: "Calendar", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Plan schedule" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
 });
