@@ -11,7 +11,7 @@ Validated locally on October 7, 2026 (America/Los_Angeles). The six requested mi
 | 3. AI | Typed constrained actions; Gemini JSON schema and strict Pydantic revalidation; goal-to-task conversion; bounded demo command parser; defaults/clarification; adaptive conversational commands; batch rollback and mocked provider errors |
 | 4. Frontend | Responsive overview, day/week calendar, goal/task CRUD, priorities, session completion/missed/skipped/locks, chat, scheduling feedback and settings; actual backend integration |
 | 5. Desktop/activity | Native C++17 Windows executable; foreground/idle APIs; WinHTTP/token/local-only reporting; bounded retries; explicit opt-in/stop; activity ingestion and uncertain-evidence suggestions requiring user confirmation |
-| 6. Portfolio | Locked dependencies; local Docker Compose; AWS Terraform deployment; four CI jobs; Mermaid architecture; API/algorithm/agent docs; seed data; real captured screenshots and integration checks |
+| 6. Portfolio | Locked dependencies; local Docker Compose; single-server AWS deployment; four CI jobs; Mermaid architecture; API/algorithm/agent docs; seed data; real captured screenshots and integration checks |
 
 ## Test and build results
 

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+exec > >(tee /var/log/ai-planner-setup.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+apt-get update
+apt-get install -y docker.io docker-compose-v2 git
+systemctl enable --now docker
+
+install -d /opt/ai-planner
+git clone --depth 1 "${repository_url}" /opt/ai-planner/source
+cd /opt/ai-planner/source
+
+password_hash=$(docker run --rm caddy:2-alpine caddy hash-password --plaintext "${app_password}")
+public_host="${replace(public_ip, ".", "-")}.sslip.io"
+
+cat > .env.production <<ENV
+POSTGRES_PASSWORD=${database_password}
+AI_MODE=demo
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash
+SITE_ADDRESS=https://$${public_host}
+APP_USERNAME=planner
+APP_PASSWORD_HASH='$${password_hash}'
+ENV
+
+docker compose --env-file .env.production -f docker-compose.production.yml up -d --build

@@ -1,58 +1,51 @@
 param(
-    [string]$Region = "us-west-2",
-    [string]$Environment = "production",
-    [string]$ImageTag = "",
-    [switch]$SkipBootstrap
+    [string]$Region = "us-west-2"
 )
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $terraformDirectory = Join-Path $repositoryRoot "infra/aws"
 
-foreach ($command in @("aws", "docker", "terraform")) {
-    if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
-        throw "$command is required and was not found on PATH."
-    }
-}
-
-if (-not (Test-Path (Join-Path $terraformDirectory "terraform.tfvars"))) {
-    throw "Create infra/aws/terraform.tfvars from terraform.tfvars.example before deploying."
-}
-
-if ([string]::IsNullOrWhiteSpace($ImageTag)) {
-    $ImageTag = (git -C $repositoryRoot rev-parse --short HEAD).Trim()
+if (-not (Get-Command terraform -ErrorAction SilentlyContinue)) {
+    throw "Terraform 1.8 or newer is required."
 }
 
 Push-Location $terraformDirectory
 try {
     terraform init
+    if ($LASTEXITCODE -ne 0) { throw "Terraform setup failed." }
 
-    if (-not $SkipBootstrap) {
-        terraform apply `
-            -var "aws_region=$Region" `
-            -var "environment=$Environment" `
-            -var "image_tag=$ImageTag" `
-            -var "service_desired_count=0"
+    terraform apply -var "aws_region=$Region"
+    if ($LASTEXITCODE -ne 0) { throw "AWS deployment was cancelled or failed." }
+
+    $website = terraform output -raw website
+    $username = terraform output -raw username
+    $password = terraform output -raw password
+    $authorization = [Convert]::ToBase64String(
+        [Text.Encoding]::ASCII.GetBytes("${username}:${password}")
+    )
+
+    Write-Host "Waiting for the server to finish setting up..."
+    $ready = $false
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        try {
+            $response = Invoke-WebRequest -Uri $website -Headers @{ Authorization = "Basic $authorization" } -UseBasicParsing -TimeoutSec 10
+            if ($response.StatusCode -eq 200) {
+                $ready = $true
+                break
+            }
+        }
+        catch {
+            Start-Sleep -Seconds 10
+        }
     }
 
-    $frontendRepository = terraform output -raw frontend_repository_url
-    $backendRepository = terraform output -raw backend_repository_url
-    $registry = $frontendRepository.Split("/")[0]
-
-    aws ecr get-login-password --region $Region | docker login --username AWS --password-stdin $registry
-
-    docker build --build-arg API_BASE_URL=http://backend.ai-planner.local:8000 -t "${frontendRepository}:${ImageTag}" (Join-Path $repositoryRoot "frontend")
-    docker build -t "${backendRepository}:${ImageTag}" (Join-Path $repositoryRoot "backend")
-    docker push "${frontendRepository}:${ImageTag}"
-    docker push "${backendRepository}:${ImageTag}"
-
-    terraform apply `
-        -var "aws_region=$Region" `
-        -var "environment=$Environment" `
-        -var "image_tag=$ImageTag" `
-        -var "service_desired_count=1"
-
-    terraform output application_url
+    Write-Host "Website: $website"
+    Write-Host "Username: $username"
+    Write-Host "Password: $password"
+    if (-not $ready) {
+        Write-Host "The server is still setting up. Try the website again in a few minutes."
+    }
 }
 finally {
     Pop-Location

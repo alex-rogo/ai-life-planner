@@ -46,28 +46,22 @@ Then run `docker compose up -d --force-recreate backend`. Keep API keys out of G
 
 ```mermaid
 flowchart LR
-    User[Browser] --> CF[CloudFront + AWS WAF]
-    CF --> ALB[Application Load Balancer]
-    ALB --> Web[Next.js on ECS Fargate]
-    ALB --> API[FastAPI on ECS Fargate]
+    User[Browser] --> Server[One AWS Lightsail server]
+    Server --> Web[Next.js interface]
+    Server --> API[FastAPI]
     Web --> API
     API --> Solver[OR-Tools scheduler]
     API <--> Gemini[Gemini API]
-    API --> DB[(RDS PostgreSQL)]
-    ECR[ECR images] --> Web
-    ECR --> API
-    Secrets[Secrets Manager] --> API
-    Web --> Logs[CloudWatch logs]
-    API --> Logs
+    API --> DB[(PostgreSQL)]
 ```
 
-Gemini interprets requests; OR-Tools chooses feasible times. FastAPI validates changes and saves them in PostgreSQL. CloudFront accepts HTTPS traffic and AWS WAF restricts the single-user deployment to approved IP addresses. ECS and RDS run in private subnets.
+Gemini interprets requests; OR-Tools chooses feasible times. FastAPI validates changes and saves them in PostgreSQL. For online use, the whole application runs on one small AWS Lightsail server with a fixed address and password-protected HTTPS.
 
 See [architecture details](docs/ARCHITECTURE.md).
 
 ## Deploy to AWS
 
-The Terraform stack includes CloudFront, AWS WAF, an Application Load Balancer, ECS Fargate, ECR, RDS PostgreSQL, Secrets Manager, and CloudWatch. Follow the [AWS deployment guide](infra/aws/README.md). AWS resources incur charges.
+The simple AWS setup uses one Lightsail server. Follow the [AWS deployment guide](infra/aws/README.md). The default server costs about $12 per month.
 
 ## Limitations
 
