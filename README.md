@@ -2,9 +2,7 @@
 
 Plan tasks, routines, and deadlines in one calendar. Generate a schedule with AI and adjust it as your plans change.
 
-![Calendar redesign preview](docs/screenshots/calendar-redesign.jpg)
-
-*This dark interface is implemented in [ai-scheduler](https://github.com/alex-rogo/ai-scheduler). It has not been ported to this repository, which currently uses a light interface.*
+![AI Planner calendar](docs/screenshots/calendar-redesign.jpg)
 
 ## Features
 

@@ -33,7 +33,7 @@ export default function Settings({ preferences, obligations, system, refresh, mu
     finally { setSaving(false); }
   }
   return <div className="settings-layout">
-    <section className="panel"><div className="panel-heading"><div><h2>Your daily rhythm</h2><p>Hard boundaries keep your schedule realistic.</p></div></div>
+    <section className="panel"><div className="panel-heading"><div><h2>Availability</h2><p>Sleep, working hours, and scheduling preferences.</p></div></div>
       <form className="form-grid" onSubmit={savePreferences}>
         <label className="span-two">Timezone<input name="timezone" aria-label="Timezone" required defaultValue={preferences.timezone} /><small>Use an IANA name, for example America/Los_Angeles.</small></label>
         {([["sleep_start", "Sleep starts"], ["sleep_end", "Wake up"], ["available_start", "Available from"], ["available_end", "Available until"], ["preferred_start", "Prefer work from"], ["preferred_end", "Prefer work until"]] as const).map(([key, label]) =>
@@ -43,7 +43,7 @@ export default function Settings({ preferences, obligations, system, refresh, mu
           {([["stability_weight", "Keep existing times"], ["preferred_weight", "Preferred hours"], ["break_weight", "Recovery breaks"], ["context_weight", "Less context switching"], ["spread_weight", "Spread weekly sessions"]] as const).map(([key, label]) =>
             <label key={key}>{label}<input name={key} type="number" min={0} max={100} required defaultValue={preferences[key]} /></label>)}
         </div></details>
-        <div className="privacy-card span-two"><ShieldCheck size={22} /><div><strong>Activity is your choice</strong><p>The companion reports application names and idle time. No window titles, screenshots, keys, or browsing history.</p>
+        <div className="privacy-card span-two"><ShieldCheck size={22} /><div><strong>Activity monitoring</strong><p>The companion reports application names and idle time. No window titles, screenshots, keys, or browsing history.</p>
           <label className="checkbox-label"><input type="checkbox" name="monitoring_enabled" defaultChecked={preferences.monitoring_enabled} />Enable activity monitoring</label></div></div>
         {error && <p role="alert" className="form-error span-two">{error}</p>}
         <div className="form-actions span-two"><button className="button primary" disabled={saving}>{saving ? "Saving…" : "Save preferences"}</button></div>
@@ -56,7 +56,7 @@ export default function Settings({ preferences, obligations, system, refresh, mu
         <p className="muted">{system.agent_token_configured ? "Agent token configured on backend." : "Set AGENT_TOKEN on the backend and agent to accept reports."}</p>
         <p className="muted">AI mode, model, and keys are configured in the backend .env file. Restart FastAPI after changing them.</p>
       </section>
-      <section className="panel"><div className="panel-heading"><div><h2>Fixed obligations</h2><p>Classes, appointments, and other anchors.</p></div><button className="icon-button" aria-label="Add obligation" onClick={() => { setEditing(null); setError(""); }}><Plus size={19} /></button></div>
+      <section className="panel"><div className="panel-heading"><div><h2>Fixed obligations</h2><p>Classes and recurring appointments.</p></div><button className="icon-button" aria-label="Add obligation" onClick={() => { setEditing(null); setError(""); }}><Plus size={19} /></button></div>
         {editing !== undefined ? <form className="form-grid" key={editing?.id || "new"} onSubmit={saveObligation}>
           <label className="span-two">Title<input name="title" defaultValue={editing?.title} required maxLength={200} /></label>
           <div className="day-checkboxes span-two">{weekdays.map((day, i) => <label key={day}><input type="checkbox" name="weekdays" value={i} defaultChecked={editing?.weekdays.includes(i)} />{day}</label>)}</div>
