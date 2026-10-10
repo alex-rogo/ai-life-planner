@@ -19,3 +19,9 @@ artifacts/
 *.log
 frontend/test-results/
 frontend/playwright-report/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log

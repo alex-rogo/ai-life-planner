@@ -11,6 +11,7 @@ Plan tasks, routines, and deadlines in one calendar. Generate a schedule with AI
 - Replan through chat while keeping completed and locked sessions.
 - Track progress with day and week calendar views.
 - Optionally use the Windows companion for activity-based suggestions.
+- Deploy the web application to AWS with Terraform.
 
 ## Run locally
 
@@ -44,30 +45,37 @@ Then run `docker compose up -d --force-recreate backend`. Keep API keys out of G
 ## Architecture
 
 ```mermaid
-flowchart TD
-    Web[Next.js interface] --> API[FastAPI]
-    API --> Actions[Validate and apply actions]
-    Actions <--> Gemini[Gemini: interpret requests]
-    Actions --> Solver[OR-Tools: schedule tasks]
-    Actions --> DB[(PostgreSQL)]
-    Solver --> DB
-    API --> DB
-    Agent[Optional Windows companion] --> Activity[Activity suggestions]
-    Activity --> DB
-    Activity --> Confirm[User confirmation]
-    Confirm --> Actions
+flowchart LR
+    User[Browser] --> CF[CloudFront + AWS WAF]
+    CF --> ALB[Application Load Balancer]
+    ALB --> Web[Next.js on ECS Fargate]
+    ALB --> API[FastAPI on ECS Fargate]
+    Web --> API
+    API --> Solver[OR-Tools scheduler]
+    API <--> Gemini[Gemini API]
+    API --> DB[(RDS PostgreSQL)]
+    ECR[ECR images] --> Web
+    ECR --> API
+    Secrets[Secrets Manager] --> API
+    Web --> Logs[CloudWatch logs]
+    API --> Logs
 ```
 
-Gemini interprets requests; OR-Tools chooses feasible times. FastAPI validates changes and saves them in PostgreSQL. Activity suggestions require your confirmation before replanning.
+Gemini interprets requests; OR-Tools chooses feasible times. FastAPI validates changes and saves them in PostgreSQL. CloudFront accepts HTTPS traffic and AWS WAF restricts the single-user deployment to approved IP addresses. ECS and RDS run in private subnets.
 
 See [architecture details](docs/ARCHITECTURE.md).
 
+## Deploy to AWS
+
+The Terraform stack includes CloudFront, AWS WAF, an Application Load Balancer, ECS Fargate, ECR, RDS PostgreSQL, Secrets Manager, and CloudWatch. Follow the [AWS deployment guide](infra/aws/README.md). AWS resources incur charges.
+
 ## Limitations
 
-- Built for one local user; no accounts, calendar sync, or cloud deployment.
+- Built for one user; no accounts or calendar sync.
 - Plans use 15-minute slots with a maximum 14-day horizon.
 - Demo chat accepts limited commands. Live Gemini behavior has not been validated against the provider.
 - Activity signals are estimates and never automatically mark work complete.
+- The Windows activity companion connects only to a local backend and is not included in the AWS deployment.
 
 ## Documentation
 

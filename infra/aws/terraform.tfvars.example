@@ -1,0 +1,16 @@
+aws_region                  = "us-west-2"
+environment                 = "production"
+image_tag                   = "latest"
+allowed_ipv4_cidrs          = ["203.0.113.10/32"]
+service_desired_count       = 1
+service_max_count           = 4
+database_instance_class     = "db.t4g.micro"
+database_multi_az           = false
+database_deletion_protection = true
+ai_mode                     = "demo"
+
+# Replace 203.0.113.10/32 with your public IPv4 address followed by /32.
+
+# For Gemini mode, create a Secrets Manager secret containing only the API key,
+# then set ai_mode = "gemini" and provide its ARN below.
+# gemini_api_key_secret_arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:ai-planner/gemini-AbCdEf"
