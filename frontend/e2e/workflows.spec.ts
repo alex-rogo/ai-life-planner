@@ -17,11 +17,11 @@ test("real API: goal through chat, calendar, CRUD and responsive dashboard", asy
   await page.getByRole("button", { name: "Create task", exact: true }).click();
   await expect(page.locator(".task-row").filter({ hasText: taskName })).toBeVisible();
   await page.goto("/calendar");
-  await expect(page.getByRole("button", { name: "Plan schedule" })).toBeVisible();
-  await page.getByRole("button", { name: "Plan schedule" }).click();
-  await expect(page.getByRole("status")).toContainText("Plan updated", { timeout: 45000 });
+  await expect(page.getByRole("complementary", { name: "Schedule assistant" })).toBeVisible();
+  await page.getByRole("textbox", { name: "Message your assistant" }).fill("Reschedule my week.");
+  await page.getByRole("button", { name: "Send message" }).click();
   await page.getByRole("button", { name: "Week", exact: true }).click();
-  await expect(page.locator(".calendar-event").first()).toBeVisible();
+  await expect(page.locator(".calendar-event").first()).toBeVisible({ timeout: 45000 });
   await page.locator(".calendar-event.is-flexible.planned").first().click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("button", { name: "Complete", exact: true }).click();
@@ -39,7 +39,7 @@ test("real API: goal through chat, calendar, CRUD and responsive dashboard", asy
   await page.screenshot({ path: "test-results/dashboard.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("link", { name: "Calendar", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Plan schedule" })).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Schedule assistant" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: "test-results/mobile.png", fullPage: true });
 });
