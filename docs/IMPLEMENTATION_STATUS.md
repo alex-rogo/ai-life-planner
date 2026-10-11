@@ -2,6 +2,17 @@
 
 Validated locally on October 7, 2026 (America/Los_Angeles). The six requested milestones are implemented.
 
+## October 9, 2026: Tomo interface
+
+The frontend was replaced with the Tomo Day/Week designs, and the backend was extended so the interface needs no manual planning controls (automatic replanning and settling, reviewable proposals with undo, `/api/overview`). Validated locally on Windows with Python 3.13 and Node 20, against SQLite in demo mode:
+
+- Pytest: 46 passed. Ruff lint and format checks pass.
+- Frontend TypeScript, ESLint and Vitest (11 tests) pass; the Next.js production build passes for `/`, `/week` and `/month`; `npm audit --omit=dev` reports 0 vulnerabilities.
+- Playwright: 3 passed against a running FastAPI + Next.js production server with Chrome (proposal preview/apply/undo, week/month views, collapsible chat, `/` shortcut, clarification, event dialog, settings, no horizontal overflow on phones).
+- The new migration was applied to a fresh SQLite database and to an existing populated one, and preserves the original CHECK constraints. It has **not** been run against PostgreSQL yet (Docker was not running), so `alembic check` on PostgreSQL is still unverified locally.
+
+The sections below describe the October 7 validation of the previous interface.
+
 ## Completed components
 
 | Milestone | Implemented and verified |

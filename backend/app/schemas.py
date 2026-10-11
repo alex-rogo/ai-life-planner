@@ -14,6 +14,8 @@ class Schema(BaseModel):
 Title = Annotated[str, Field(min_length=1, max_length=200)]
 Minutes = Annotated[int, Field(ge=15, le=10080, multiple_of=15)]
 Clock = Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]
+Category = Literal["focus", "routine", "personal", "errand"]
+EventKind = Literal["commitment", "appointment", "interview", "personal"]
 
 
 class GoalCreate(Schema):
@@ -43,6 +45,7 @@ class TaskCreate(Schema):
     activity_apps: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(
         default_factory=list, max_length=20
     )
+    category: Category = "focus"
 
     @field_validator("activity_apps")
     @classmethod
@@ -78,6 +81,7 @@ class TaskPatch(Schema):
     recurrence: Literal["none", "daily", "weekly"] | None = None
     sessions_per_week: int | None = Field(default=None, ge=1, le=7)
     activity_apps: list[str] | None = None
+    category: Category | None = None
 
 
 class TaskOut(TaskCreate):
@@ -93,6 +97,7 @@ class ObligationCreate(Schema):
     end_time: Clock
     start_date: date | None = None
     end_date: date | None = None
+    kind: EventKind = "commitment"
 
     @model_validator(mode="after")
     def bounds(self):
@@ -160,6 +165,17 @@ class SessionOut(Schema):
     credited_minutes: int
 
 
+class SessionView(SessionOut):
+    """A session with the display context the calendar needs."""
+
+    category: Literal["focus", "routine", "personal", "errand", "fixed"]
+    subtitle: str | None = None
+    deadline: datetime | None = None
+    change: str | None = None
+    # Imported from a connected calendar: read-only and never moved by planning.
+    external: bool = False
+
+
 class SessionPatch(Schema):
     status: Literal["completed", "skipped", "missed"] | None = None
     locked: bool | None = None
@@ -225,4 +241,110 @@ class MessageOut(Schema):
     role: str
     content: str
     mode: str
+    proposal_id: UUID | None = None
     created_at: datetime
+
+
+class Change(Schema):
+    kind: str
+    title: str
+    detail: str
+
+
+class Preview(Schema):
+    start: datetime
+    end: datetime
+    sessions: list[SessionView]
+
+
+class ProposalOut(Schema):
+    id: UUID
+    status: str
+    message: str
+    title: str
+    changes: list[Change]
+    footer: str
+    preview: Preview
+    can_undo: bool = False
+    created_at: datetime
+
+
+class ChatOut(Schema):
+    reply: str
+    mode: str
+    defaults: list[str]
+    needs_clarification: bool
+    proposal: ProposalOut | None = None
+
+
+class DecisionOut(Schema):
+    reply: str
+    proposal: ProposalOut | None = None
+
+
+class Stat(Schema):
+    label: str
+    value: str
+
+
+class UpcomingItem(Schema):
+    kind: Literal["Appointment", "Interview", "Project", "Personal", "Assignment"]
+    date: date
+    when: str
+    title: str
+    meta: str
+    note: str = ""
+    obligation_id: UUID | None = None
+    goal_id: UUID | None = None
+
+
+class GoalProgress(Schema):
+    id: UUID
+    title: str
+    pct: int
+    progress: str
+    meta: str
+
+
+class Deadline(Schema):
+    date: date
+    title: str
+    # "assignment" and "all_day" items come from connected calendars.
+    kind: Literal["task", "goal", "assignment", "all_day"] = "task"
+
+
+class Overview(Schema):
+    timezone: str
+    start: date
+    days: int
+    headline: str
+    summary: str
+    brief: str
+    stats: list[Stat]
+    upcoming: list[UpcomingItem]
+    goals: list[GoalProgress]
+    deadlines: list[Deadline]
+    prompts: list[str]
+    first_hour: int
+    last_hour: int
+
+
+Provider = Literal["canvas", "google", "outlook", "apple", "other", "demo"]
+
+
+class CalendarIn(Schema):
+    provider: Provider
+    name: str = Field(default="", max_length=80)
+    url: str = Field(min_length=1, max_length=2000)
+
+
+class CalendarOut(Schema):
+    id: UUID
+    name: str
+    provider: Provider
+    url_hint: str
+    last_synced_at: datetime | None
+    last_error: str
+    events: int
+    deadlines: int
+    all_day: int

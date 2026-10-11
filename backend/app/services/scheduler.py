@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.db import utcnow
-from app.models import Obligation, ScheduleSession, Task
+from app.models import ExternalEvent, Obligation, ScheduleSession, Task
 from app.schemas import PlanRequest, PlanResult, SessionOut, Unscheduled
 from app.services.resources import preferences
 
@@ -402,6 +402,15 @@ def generate_plan(db: Session, request: PlanRequest, now: datetime | None = None
                 409,
                 f"Fixed blocks conflict: {left.title} and {right.title}. Existing schedule retained.",
             )
+    # Imported calendar events block flexible work but may overlap anything, including each other,
+    # so they join after the overlap check. Tomo never moves them.
+    fixed += db.scalars(
+        select(ExternalEvent).where(
+            ExternalEvent.kind == "event",
+            ExternalEvent.starts_at < end,
+            ExternalEvent.ends_at > start,
+        )
+    ).all()
     tasks = db.scalars(select(Task).where(Task.status == "pending").order_by(Task.id)).all()
     history = [s for s in all_sessions if s.id not in old_ids]
     units, unfit = make_units(tasks, history, start, end, tz, old)
@@ -447,6 +456,9 @@ def generate_plan(db: Session, request: PlanRequest, now: datetime | None = None
     if removed:
         db.execute(delete(ScheduleSession).where(ScheduleSession.id.in_(removed)))
     db.add_all(new_obligations + replacements)
+    covered = (first + timedelta(days=request.days - 1)).isoformat()
+    if not prefs.planned_through or prefs.planned_through < covered:
+        prefs.planned_through = covered
     db.flush()
     sessions = db.scalars(
         select(ScheduleSession)

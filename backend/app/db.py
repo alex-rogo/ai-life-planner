@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 
 from sqlalchemy import DateTime, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
@@ -57,5 +58,17 @@ def get_db():
             raise
 
 
+@lru_cache
+def clock_offset() -> timedelta:
+    """Shift applied to the real clock when DEMO_NOW is set, fixed when first needed."""
+    value = get_settings().demo_now
+    if not value:
+        return timedelta(0)
+    target = datetime.fromisoformat(value)
+    if target.tzinfo is None:
+        raise ValueError("DEMO_NOW needs a UTC offset, for example 2026-10-13T08:00:00-07:00")
+    return target - datetime.now(UTC)
+
+
 def utcnow() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(UTC) + clock_offset()

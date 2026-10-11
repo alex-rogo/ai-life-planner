@@ -75,7 +75,7 @@ I need to finish this assignment first.
 Reschedule my week.
 ```
 
-Defaults are returned explicitly. Ambiguous references ask for clarification instead of guessing. The C++ learning goal creates two actionable initial work packages. If several C++ tasks exist, use the task form to select one; Gemini can resolve an exact title or ask a follow-up question.
+Defaults are returned explicitly. Ambiguous references ask for clarification instead of guessing. The C++ learning goal creates two actionable initial work packages. If several C++ tasks exist, use the exact task title; Gemini can resolve an exact title or ask a follow-up question. Every chat request returns a proposal that you apply or discard in the chat panel; an applied proposal can be undone until something else changes.
 
 ## Windows companion
 
@@ -105,7 +105,7 @@ Press **Ctrl+C** to stop. Disabling monitoring in Settings rejects reports and s
 
 It samples every five seconds and reports every 30 seconds by default. A bounded in-memory buffer survives short outages, with capped retry backoff; stopping discards unsent data. No screenshots, keylogging, window titles, browser history or file paths are collected. Only loopback HTTP destinations are permitted, redirects are disabled and a token is required.
 
-Associate optional executable names (e.g. `Code.exe`) with a task in its editor. Matching apps are weak context, never proof of work. Unknown activity is not treated as unrelated. After at least 15 minutes of idle/unassociated evidence, an unresolved session can produce a suggestion. Confirmation replans unconfirmed work; dismissal keeps the plan. Credit actual work in the session dialog before confirming a suggestion if you already completed part of it.
+Associate optional executable names (e.g. `Code.exe`) with a task through the API (`activity_apps`) or by asking Gemini; the demo C++ goal sets them. Matching apps are weak context, never proof of work. Unknown activity is not treated as unrelated. After at least 15 minutes of idle/unassociated evidence, an unresolved session can produce a suggestion, shown as a check-in card in the chat panel. Confirmation replans unconfirmed work; dismissal keeps the plan. While monitoring is on, elapsed sessions wait 30 minutes (and for any pending check-in) before they are automatically counted as done.
 
 See [agent design and validation](DESKTOP_AGENT.md). The development machine lacked the MSVC workload; the executable was compiled and tested with Clang through a portable Zig C++ driver. The GitHub Windows job validates the normal MSVC build.
 

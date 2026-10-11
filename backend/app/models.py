@@ -1,6 +1,16 @@
 import uuid
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base, UTCDateTime, utcnow
@@ -25,6 +35,7 @@ class Task(Base):
         CheckConstraint("status IN ('pending', 'completed', 'cancelled')"),
         CheckConstraint("recurrence IN ('none', 'daily', 'weekly')"),
         CheckConstraint("sessions_per_week BETWEEN 1 AND 7"),
+        CheckConstraint("category IN ('focus', 'routine', 'personal', 'errand')"),
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     goal_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -43,11 +54,15 @@ class Task(Base):
     recurrence: Mapped[str] = mapped_column(String(10), default="none")
     sessions_per_week: Mapped[int] = mapped_column(Integer, default=3)
     activity_apps: Mapped[list] = mapped_column(JSON, default=list)
+    category: Mapped[str] = mapped_column(String(12), default="focus", server_default="focus")
     created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow)
 
 
 class Obligation(Base):
     __tablename__ = "obligations"
+    __table_args__ = (
+        CheckConstraint("kind IN ('commitment', 'appointment', 'interview', 'personal')"),
+    )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(200))
     weekdays: Mapped[list] = mapped_column(JSON)
@@ -55,6 +70,7 @@ class Obligation(Base):
     end_time: Mapped[str] = mapped_column(String(5))
     start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     end_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    kind: Mapped[str] = mapped_column(String(12), default="commitment", server_default="commitment")
 
 
 class Preference(Base):
@@ -75,6 +91,8 @@ class Preference(Base):
     context_weight: Mapped[int] = mapped_column(Integer, default=5)
     spread_weight: Mapped[int] = mapped_column(Integer, default=20)
     monitoring_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Last local date covered by a successful plan; the API extends the horizon automatically.
+    planned_through: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
 
 class ScheduleSession(Base):
@@ -134,4 +152,70 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(12))
     content: Mapped[str] = mapped_column(Text)
     mode: Mapped[str] = mapped_column(String(12))
+    proposal_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
+    )
     created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow, index=True)
+
+
+class Proposal(Base):
+    """An assistant change set previewed against a rolled-back transaction until applied."""
+
+    __tablename__ = "proposals"
+    __table_args__ = (CheckConstraint("status IN ('pending', 'applied', 'discarded', 'undone')"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    message: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(String(300))
+    batch: Mapped[dict] = mapped_column(JSON)
+    plan: Mapped[dict] = mapped_column(JSON)
+    changes: Mapped[list] = mapped_column(JSON, default=list)
+    footer: Mapped[str] = mapped_column(Text, default="")
+    preview: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)
+    # State captured immediately before applying, and a hash of the state right after.
+    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The previewed end state and a hash of the state it was computed from. If nothing has
+    # changed since the preview, applying writes exactly this instead of solving again.
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    base_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow, index=True)
+
+
+class CalendarSource(Base):
+    """A subscribed calendar feed (.ics). The URL is a secret and never leaves the backend."""
+
+    __tablename__ = "calendar_sources"
+    __table_args__ = (
+        CheckConstraint("provider IN ('canvas', 'google', 'outlook', 'apple', 'other', 'demo')"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(80))
+    provider: Mapped[str] = mapped_column(String(12))
+    url: Mapped[str] = mapped_column(Text)
+    last_synced_at = mapped_column(UTCDateTime, nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow)
+
+
+class ExternalEvent(Base):
+    """An imported, read-only calendar item. Timed events block planning; Tomo never moves them."""
+
+    __tablename__ = "external_events"
+    __table_args__ = (
+        CheckConstraint("kind IN ('event', 'deadline', 'all_day')"),
+        CheckConstraint("ends_at >= starts_at"),
+        UniqueConstraint("source_id", "uid"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("calendar_sources.id", ondelete="CASCADE"), index=True
+    )
+    # The feed's UID, plus the occurrence start for instances of repeating events.
+    uid: Mapped[str] = mapped_column(String(400))
+    kind: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(String(300))
+    course: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    location: Mapped[str] = mapped_column(String(300), default="")
+    starts_at = mapped_column(UTCDateTime, nullable=False, index=True)
+    ends_at = mapped_column(UTCDateTime, nullable=False, index=True)

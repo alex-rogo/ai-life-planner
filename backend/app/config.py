@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     ai_mode: str = Field(default="demo", pattern="^(demo|gemini)$")
     agent_token: str = ""
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Demo only: pretend the app started at this moment (ISO 8601 with UTC offset), then let the
+    # clock run normally. Empty uses the real time.
+    demo_now: str = ""
 
 
 @lru_cache

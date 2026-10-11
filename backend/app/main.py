@@ -1,9 +1,10 @@
 import secrets
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -13,36 +14,51 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db import get_db
-from app.models import ChatMessage, Goal, Obligation, ScheduleSession, Suggestion, Task
+from app.db import clock_offset, get_db, utcnow
+from app.models import (
+    CalendarSource,
+    ChatMessage,
+    Goal,
+    Obligation,
+    ScheduleSession,
+    Suggestion,
+    Task,
+)
 from app.schemas import (
     ActivityBatch,
+    CalendarIn,
+    CalendarOut,
     ChatIn,
+    ChatOut,
+    DecisionOut,
     GoalCreate,
     GoalOut,
     MessageOut,
     ObligationCreate,
     ObligationOut,
+    Overview,
     PlanRequest,
     PlanResult,
     Preferences,
-    SessionOut,
+    ProposalOut,
     SessionPatch,
+    SessionView,
     SuggestionDecision,
     SuggestionOut,
     TaskCreate,
     TaskOut,
     TaskPatch,
 )
-from app.services import activity, resources
+from app.services import activity, demo, feeds, overview, resources, upkeep
+from app.services.ai import pipeline
 from app.services.ai.interpreter import DEMO_COMMANDS
-from app.services.ai.pipeline import execute_chat
 from app.services.scheduler import generate_plan
 
 app = FastAPI(
     title="AI Planner",
     version="0.1.0",
-    description="Local-first scheduling. Gemini interprets; CP-SAT plans.",
+    description="Local-first scheduling. Gemini interprets; CP-SAT plans. Changes to tasks, "
+    "obligations and preferences replan the week automatically.",
 )
 settings = get_settings()
 app.add_middleware(
@@ -116,19 +132,25 @@ def tasks(db: DB):
 @app.post("/api/tasks", response_model=TaskOut, status_code=201, tags=["tasks"])
 def add_task(data: TaskCreate, db: DB):
     resources.preferences(db, lock=True)
-    return resources.create_task(db, data)
+    row = resources.create_task(db, data)
+    upkeep.replan(db)
+    return row
 
 
 @app.patch("/api/tasks/{identifier}", response_model=TaskOut, tags=["tasks"])
 def edit_task(identifier: UUID, data: TaskPatch, db: DB):
     resources.preferences(db, lock=True)
-    return resources.update_task(db, identifier, data)
+    row = resources.update_task(db, identifier, data)
+    upkeep.replan(db)
+    return row
 
 
 @app.delete("/api/tasks/{identifier}", status_code=204, tags=["tasks"])
 def delete_task(identifier: UUID, db: DB):
     resources.preferences(db, lock=True)
     db.delete(resources.require(db, Task, identifier))
+    db.flush()
+    upkeep.replan(db)
     return Response(status_code=204)
 
 
@@ -139,7 +161,9 @@ def get_preferences(db: DB):
 
 @app.put("/api/preferences", response_model=Preferences, tags=["preferences"])
 def put_preferences(data: Preferences, db: DB):
-    return resources.save_preferences(db, data)
+    row = resources.save_preferences(db, data)
+    upkeep.replan(db)
+    return row
 
 
 @app.get("/api/obligations", response_model=list[ObligationOut], tags=["obligations"])
@@ -150,24 +174,32 @@ def obligations(db: DB):
 @app.post("/api/obligations", response_model=ObligationOut, status_code=201, tags=["obligations"])
 def add_obligation(data: ObligationCreate, db: DB):
     resources.preferences(db, lock=True)
-    return resources.save_obligation(db, data)
+    row = resources.save_obligation(db, data)
+    upkeep.replan(db)
+    return row
 
 
 @app.put("/api/obligations/{identifier}", response_model=ObligationOut, tags=["obligations"])
 def edit_obligation(identifier: UUID, data: ObligationCreate, db: DB):
     resources.preferences(db, lock=True)
-    return resources.save_obligation(db, data, identifier)
+    row = resources.save_obligation(db, data, identifier)
+    upkeep.replan(db)
+    return row
 
 
 @app.delete("/api/obligations/{identifier}", status_code=204, tags=["obligations"])
 def delete_obligation(identifier: UUID, db: DB):
     resources.preferences(db, lock=True)
     db.delete(resources.require(db, Obligation, identifier))
+    db.flush()
+    upkeep.replan(db)
     return Response(status_code=204)
 
 
-@app.get("/api/sessions", response_model=list[SessionOut], tags=["schedule"])
+@app.get("/api/sessions", response_model=list[SessionView], tags=["schedule"])
 def sessions(db: DB, start: datetime | None = None, end: datetime | None = None):
+    upkeep.settle(db)
+    upkeep.ensure_plan(db)
     statement = select(ScheduleSession).order_by(ScheduleSession.starts_at)
     if start:
         if start.tzinfo is None:
@@ -181,13 +213,17 @@ def sessions(db: DB, start: datetime | None = None, end: datetime | None = None)
                 [{"loc": ["query", "end"], "msg": "Timezone required", "type": "value_error"}]
             )
         statement = statement.where(ScheduleSession.starts_at < end)
-    return db.scalars(statement.limit(2000)).all()
+    rows = upkeep.session_views(db, db.scalars(statement.limit(2000)).all())
+    return rows + upkeep.external_views(db, start, end)
 
 
-@app.patch("/api/sessions/{identifier}", response_model=SessionOut, tags=["schedule"])
+@app.patch("/api/sessions/{identifier}", response_model=SessionView, tags=["schedule"])
 def edit_session(identifier: UUID, data: SessionPatch, db: DB):
     resources.preferences(db, lock=True)
-    return resources.update_session(db, identifier, data)
+    row = resources.update_session(db, identifier, data)
+    if data.status in ("skipped", "missed"):
+        upkeep.replan(db)
+    return upkeep.session_views(db, [row])[0]
 
 
 @app.post("/api/schedule/plan", response_model=PlanResult, tags=["schedule"])
@@ -195,9 +231,46 @@ def plan_schedule(data: PlanRequest, db: DB):
     return generate_plan(db, data)
 
 
-@app.post("/api/assistant", tags=["assistant"])
+@app.get("/api/overview", response_model=Overview, tags=["schedule"])
+def get_overview(
+    db: DB,
+    start: date | None = None,
+    days: Annotated[int, Query(ge=1, le=42)] = 1,
+):
+    """Sidebar, stats and briefs for the visible range. Syncs stale calendar feeds and settles
+    elapsed work first."""
+    feeds.sync_stale(db)
+    upkeep.settle(db)
+    upkeep.ensure_plan(db)
+    if start is None:
+        start = utcnow().astimezone(ZoneInfo(resources.preferences(db).timezone)).date()
+    return overview.build(db, start, days, settings)
+
+
+@app.post("/api/assistant", response_model=ChatOut, tags=["assistant"])
 def assistant(data: ChatIn, db: DB):
-    return execute_chat(db, data, settings)
+    """Interpret a request and preview its effect. Apply the returned proposal to commit it."""
+    return pipeline.propose(db, data, settings)
+
+
+@app.get("/api/proposals/current", response_model=ProposalOut | None, tags=["assistant"])
+def current_proposal(db: DB):
+    return pipeline.current_proposal(db)
+
+
+@app.post("/api/proposals/{identifier}/apply", response_model=DecisionOut, tags=["assistant"])
+def apply_proposal(identifier: UUID, db: DB):
+    return pipeline.apply_proposal(db, identifier, settings)
+
+
+@app.post("/api/proposals/{identifier}/discard", response_model=DecisionOut, tags=["assistant"])
+def discard_proposal(identifier: UUID, db: DB):
+    return pipeline.discard_proposal(db, identifier, settings)
+
+
+@app.post("/api/proposals/{identifier}/undo", response_model=DecisionOut, tags=["assistant"])
+def undo_proposal(identifier: UUID, db: DB):
+    return pipeline.undo_proposal(db, identifier, settings)
 
 
 @app.get("/api/messages", response_model=list[MessageOut], tags=["assistant"])
@@ -213,10 +286,22 @@ def messages(db: DB):
 def system_status(db: DB):
     prefs = resources.preferences(db)
     return {
+        "now": utcnow(),
+        "demo_clock": bool(clock_offset()),
         "ai_mode": settings.ai_mode,
         "gemini_configured": bool(settings.gemini_api_key),
         "gemini_model": settings.gemini_model,
         "demo_commands": DEMO_COMMANDS,
+        "sample_data_tools": demo.allowed(settings),
+        "calendars": [
+            {
+                "name": c.name,
+                "provider": c.provider,
+                "last_synced_at": c.last_synced_at,
+                "error": bool(c.last_error),
+            }
+            for c in db.scalars(select(CalendarSource).order_by(CalendarSource.created_at))
+        ],
         "monitoring_enabled": prefs.monitoring_enabled,
         "agent_token_configured": bool(settings.agent_token),
         **activity.connection_status(db),
@@ -246,3 +331,40 @@ def suggestions(db: DB):
 @app.post("/api/suggestions/{identifier}/decision", tags=["activity"])
 def decide_suggestion(identifier: UUID, data: SuggestionDecision, db: DB):
     return activity.decide(db, identifier, data)
+
+
+@app.get("/api/calendars", response_model=list[CalendarOut], tags=["calendars"])
+def calendars(db: DB):
+    rows = db.scalars(select(CalendarSource).order_by(CalendarSource.created_at)).all()
+    return [feeds.out(db, row) for row in rows]
+
+
+@app.post("/api/calendars", response_model=CalendarOut, status_code=201, tags=["calendars"])
+def connect_calendar(data: CalendarIn, db: DB):
+    """Subscribe to an .ics feed. Its events import as fixed, read-only blocks and deadlines."""
+    return feeds.connect(db, data.provider, data.name, data.url)
+
+
+@app.post("/api/calendars/{identifier}/sync", response_model=CalendarOut, tags=["calendars"])
+def sync_calendar(identifier: UUID, db: DB):
+    return feeds.sync(db, feeds.require_source(db, identifier))
+
+
+@app.delete("/api/calendars/{identifier}", status_code=204, tags=["calendars"])
+def disconnect_calendar(identifier: UUID, db: DB):
+    feeds.disconnect(db, feeds.require_source(db, identifier))
+    return Response(status_code=204)
+
+
+@app.post("/api/demo/clear", status_code=204, tags=["demo"])
+def clear_demo(db: DB):
+    """Demo mode only: empty the planner (settings are kept)."""
+    demo.clear(db, settings)
+    return Response(status_code=204)
+
+
+@app.post("/api/demo/populate", status_code=204, tags=["demo"])
+def populate_demo(db: DB):
+    """Demo mode only: replace everything with the sample week and the demo Canvas feed."""
+    demo.populate(db, settings)
+    return Response(status_code=204)

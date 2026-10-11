@@ -24,25 +24,69 @@ def test_action_schema_rejects_invalid_operations():
         )
 
 
+def propose_and_apply(client, message):
+    response = client.post("/api/assistant", json={"message": message})
+    assert response.status_code == 200, response.text
+    proposal = response.json()["proposal"]
+    applied = client.post(f"/api/proposals/{proposal['id']}/apply")
+    assert applied.status_code == 200, applied.text
+    return proposal, applied.json()
+
+
 def test_demo_goal_and_conversational_rescheduling(client):
     response = client.post(
         "/api/assistant", json={"message": "I want to get good at C++ by December."}
     )
     assert response.status_code == 200, response.text
-    assert response.json()["mode"] == "demo"
+    body = response.json()
+    assert body["mode"] == "demo"
+    assert body["defaults"]
+    # A proposal is only a preview until applied.
+    assert client.get("/api/goals").json() == []
+    assert body["proposal"]["changes"][0]["kind"] == "New goal"
+    assert any(s["change"] == "Added" for s in body["proposal"]["preview"]["sessions"])
+    client.post(f"/api/proposals/{body['proposal']['id']}/apply")
     assert len(client.get("/api/goals").json()) == 1
     assert len(client.get("/api/tasks").json()) == 2
-    assert response.json()["defaults"]
-    client.post("/api/assistant", json={"message": "I want to work out four times per week."})
-    response = client.post("/api/assistant", json={"message": "Move my workout to tonight."})
-    assert response.status_code == 200
-    assert not response.json()["needs_clarification"]
-    assert client.get("/api/messages").json()
+    propose_and_apply(client, "I want to work out four times per week.")
+    proposal, applied = propose_and_apply(client, "Move my workout to tonight.")
+    assert applied["reply"].startswith("Done.")
+    messages = client.get("/api/messages").json()
+    assert messages[-1]["proposal_id"] == proposal["id"]
+
+
+def test_discard_keeps_plan_and_proposals_resolve_once(client):
+    response = client.post(
+        "/api/assistant", json={"message": "I need to study LeetCode for an hour every day."}
+    )
+    identifier = response.json()["proposal"]["id"]
+    assert client.get("/api/proposals/current").json()["id"] == identifier
+    assert client.post(f"/api/proposals/{identifier}/discard").status_code == 200
+    assert client.get("/api/tasks").json() == []
+    assert client.get("/api/proposals/current").json() is None
+    assert client.post(f"/api/proposals/{identifier}/apply").status_code == 409
+
+
+def test_undo_restores_previous_plan_until_something_changes(client):
+    proposal, _ = propose_and_apply(client, "I need to study LeetCode for an hour every day.")
+    assert client.get("/api/proposals/current").json()["can_undo"]
+    assert client.post(f"/api/proposals/{proposal['id']}/undo").status_code == 200
+    assert client.get("/api/tasks").json() == []
+    assert client.get("/api/sessions").json() == []
+    assert client.post(f"/api/proposals/{proposal['id']}/undo").status_code == 409
+
+    proposal, _ = propose_and_apply(client, "I need to study LeetCode for an hour every day.")
+    client.post("/api/tasks", json={"title": "Edited elsewhere"})
+    assert client.get("/api/proposals/current").json() is None
+    response = client.post(f"/api/proposals/{proposal['id']}/undo")
+    assert response.status_code == 409
+    assert "changed" in response.json()["detail"]
 
 
 def test_unknown_demo_request_clarifies_without_mutation(client):
     response = client.post("/api/assistant", json={"message": "Schedule something"})
     assert response.json()["needs_clarification"]
+    assert response.json()["proposal"] is None
     assert client.get("/api/tasks").json() == []
 
 
@@ -164,3 +208,61 @@ def test_ai_cannot_enable_monitoring_as_a_side_effect(client, monkeypatch):
     response = client.post("/api/assistant", json={"message": "Change my sleep hours"})
     assert response.status_code == 422
     assert not client.get("/api/preferences").json()["monitoring_enabled"]
+
+
+def test_recreated_rows_at_the_same_time_are_not_reported_as_moves():
+    from zoneinfo import ZoneInfo
+
+    from app.services.ai.actions import Reschedule
+    from app.services.ai.pipeline import describe
+
+    def view(identifier, start, end):
+        return {
+            "id": identifier,
+            "task_id": "t",
+            "obligation_id": None,
+            "title": "Workout",
+            "status": "planned",
+            "category": "routine",
+            "starts_at": start,
+            "ends_at": end,
+        }
+
+    batch = ActionBatch(actions=[Reschedule(kind="reschedule")], explanation="Replan")
+    before = [view("a", "2027-01-04T19:00:00+00:00", "2027-01-04T20:00:00+00:00")]
+    after = [
+        view("b", "2027-01-04T19:00:00+00:00", "2027-01-04T20:00:00+00:00"),
+        view("c", "2027-01-05T19:00:00+00:00", "2027-01-05T20:00:00+00:00"),
+    ]
+    changes = describe(before, after, batch, ZoneInfo("America/Los_Angeles"))
+    assert [c["kind"] for c in changes] == ["Added"]
+    assert [v["change"] for v in after] == [None, "Added"]
+
+
+def test_apply_commits_exactly_the_preview_without_solving_again(client, monkeypatch):
+    response = client.post(
+        "/api/assistant", json={"message": "I need to study LeetCode for an hour every day."}
+    )
+    proposal = response.json()["proposal"]
+    shown = {(s["title"], s["starts_at"], s["ends_at"]) for s in proposal["preview"]["sessions"]}
+
+    def no_solving(*_):
+        raise AssertionError("Applying an unchanged preview must not run the solver")
+
+    monkeypatch.setattr("app.services.ai.pipeline.generate_plan", no_solving)
+    assert client.post(f"/api/proposals/{proposal['id']}/apply").status_code == 200
+    window = {"start": proposal["preview"]["start"], "end": proposal["preview"]["end"]}
+    applied = client.get("/api/sessions", params=window).json()
+    assert {(s["title"], s["starts_at"], s["ends_at"]) for s in applied} == shown
+    assert client.get("/api/proposals/current").json()["can_undo"]
+
+
+def test_apply_plans_again_when_something_changed_since_the_preview(client):
+    response = client.post(
+        "/api/assistant", json={"message": "I need to study LeetCode for an hour every day."}
+    )
+    identifier = response.json()["proposal"]["id"]
+    client.post("/api/tasks", json={"title": "Added after the preview"})
+    assert client.post(f"/api/proposals/{identifier}/apply").status_code == 200
+    titles = {t["title"] for t in client.get("/api/tasks").json()}
+    assert titles == {"LeetCode practice", "Added after the preview"}
