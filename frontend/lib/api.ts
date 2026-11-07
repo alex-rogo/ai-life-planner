@@ -1,6 +1,13 @@
+let tokenGetter: (() => Promise<string | null>) | null = null;
+
+export function setApiTokenGetter(getter: (() => Promise<string | null>) | null) {
+  tokenGetter = getter;
+}
+
 export async function api<T>(path: string, method = "GET", body?: unknown, timeoutMs = 120000): Promise<T> {
+  const token = await tokenGetter?.();
   const response = await fetch(`/api${path}`, {
-    method, headers: { "Content-Type": "application/json" },
+    method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });

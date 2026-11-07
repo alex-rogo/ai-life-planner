@@ -7,7 +7,9 @@ date, so those become deadlines at 11:59 pm local time. Network access happens b
 database lock is taken, and a feed that suddenly comes back empty never wipes what was imported.
 """
 
+import ipaddress
 import re
+import socket
 from collections import Counter
 from datetime import date, datetime, time, timedelta
 from urllib.parse import urlparse
@@ -46,10 +48,25 @@ def normalize_url(url: str) -> str:
     if url.lower().startswith("webcal://"):
         url = "https://" + url[len("webcal://") :]
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise HTTPException(
             422, "Paste the calendar's feed link (it starts with https:// or webcal://)."
         )
+    try:
+        if parsed.port not in (None, 443):
+            raise HTTPException(422, "Calendar links must use the standard HTTPS port.")
+    except ValueError as exc:
+        raise HTTPException(422, "That calendar link has an invalid port.") from exc
+    host = parsed.hostname.rstrip(".").lower()
+    if host in ("localhost", "metadata.google.internal") or host.endswith((".localhost", ".local", ".internal")):
+        raise HTTPException(422, "That calendar link is not public.")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if not address.is_global:
+            raise HTTPException(422, "That calendar link is not public.")
     return url
 
 
@@ -63,16 +80,26 @@ def url_hint(url: str) -> str:
 
 
 def _download(url: str) -> str:
+    # Refuse private DNS results and redirects before fetching remote calendar content.
+    # This keeps a public visitor from using calendar subscriptions to probe the API's network.
+    host = urlparse(normalize_url(url)).hostname
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise HTTPException(502, "Couldn't resolve the calendar feed host.") from exc
+    if not addresses or any(not ipaddress.ip_address(row[4][0]).is_global for row in addresses):
+        raise HTTPException(422, "That calendar link is not public.")
     try:
         with (
             httpx.Client(
                 timeout=15,
-                follow_redirects=True,
-                max_redirects=5,
+                follow_redirects=False,
                 headers={"User-Agent": "Tomo calendar sync", "Accept": "text/calendar, */*"},
             ) as client,
             client.stream("GET", url) as response,
         ):
+            if response.is_redirect:
+                raise HTTPException(422, "Use the calendar feed's final HTTPS link.")
             response.raise_for_status()
             body = bytearray()
             for chunk in response.iter_bytes():

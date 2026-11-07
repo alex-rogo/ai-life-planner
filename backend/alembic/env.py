@@ -9,10 +9,11 @@ from app.db import Base
 
 fileConfig(context.config.config_file_name)
 target_metadata = Base.metadata
+database_url = context.config.get_main_option("sqlalchemy.url") or get_settings().database_url
 
 if context.is_offline_mode():
     context.configure(
-        url=get_settings().database_url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -20,7 +21,7 @@ if context.is_offline_mode():
     with context.begin_transaction():
         context.run_migrations()
 else:
-    engine = create_engine(get_settings().database_url)
+    engine = create_engine(database_url)
     with engine.connect() as connection:
         context.configure(
             connection=connection,

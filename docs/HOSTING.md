@@ -1,55 +1,68 @@
 # Deploy Tomo
 
-Use Cloudflare Pages for the static Next.js frontend and Railway Hobby for the
-FastAPI backend. Railway's optional Serverless setting must stay **off** so the
-API does not sleep. The public demo uses `AI_MODE=demo`, so no paid LLM key is
-needed. Both services deploy from the same GitHub production branch.
+Tomo uses Cloudflare Pages for the static website and Railway for the FastAPI
+service. Keep Railway Serverless **off** so the API responds on the first visit.
+The public demo uses `AI_MODE=demo`; it needs no paid LLM key. Sign-in uses Clerk.
+The website and API deploy from the same GitHub branch.
+
+## Before switching the public site
+
+1. In the existing Clerk app, create a **Production** instance for
+   `tomoplanner.app`. Enable the sign-in methods you want to offer. Clerk's
+   **API Keys** page contains the production Publishable Key (`pk_live_...`)
+   and JWT public key. The backend verifies tokens with the public key, so it
+   does not need a Clerk Secret Key.
+2. Keep the current Railway `/data` volume. The old shared demo database may
+   stay on that volume; new private workspaces use `/data/workspaces`. Existing
+   shared sample data is not moved into users' accounts.
+3. Generate a long random shared secret, for example with
+   `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Put the same
+   value in Railway and Cloudflare as described below. Never commit it.
 
 ## Railway API
 
-1. Create a Railway project from the GitHub repository. Select the production
-   branch and set the service root directory to `/backend`. Railway should find
-   `backend/Dockerfile` in that directory.
-2. Choose Hobby. Add a small persistent volume mounted at `/data`.
-3. Set runtime variables:
+In the existing backend service, keep the root directory `/backend`, the
+persistent volume mounted at `/data`, the public HTTPS domain and `/health`
+health check. Set these service variables:
 
-   | Variable | Value |
-   | --- | --- |
-   | `DATABASE_URL` | `sqlite:////data/tomo-demo.db` |
-   | `AI_MODE` | `demo` |
-   | `SEED_ON_START` | `true` |
+| Variable | Value |
+| --- | --- |
+| `WORKSPACE_ROOT` | `/data/workspaces` |
+| `AI_MODE` | `demo` |
+| `CLERK_JWT_KEY` | Clerk JWT public key, including PEM header/footer; `\n` may represent line breaks |
+| `CLERK_AUTHORIZED_PARTIES` | `https://tomoplanner.app` |
+| `PROXY_SHARED_SECRET` | The generated shared secret |
 
-4. Generate a public HTTPS domain for the service and set the health check path
-   to `/health`. Confirm the URL returns `{"status":"ok"}`. Save the origin URL
-   without a trailing slash.
-5. Leave **Settings → Deploy → Serverless** disabled. In **Workspace Usage**,
-   set a compute usage alert. Railway Hobby costs at least $5/month, with the
-   first $5 of usage included. Usage above $5 costs extra; a $5 hard limit
-   prevents extra compute charges by taking the API offline.
+`DATABASE_URL` and `SEED_ON_START` are ignored in workspace mode. At startup,
+the container prepares one sample plan; each demo visitor receives a quick,
+separate copy. Signed-in users start with an empty private planner. The API
+refuses direct public requests without the Cloudflare proxy secret.
 
-The container runs migrations and adds sample data at startup when the database
-is empty. The volume keeps data across redeploys. This is a shared public demo
-without login; do not add private calendar URLs or API keys.
+Leave **Settings → Deploy → Serverless** disabled. Set a usage alert in Railway.
+Railway can charge beyond the plan's included usage; check the current price
+and limits in your Railway account.
 
-## Cloudflare Pages frontend
+## Cloudflare Pages
 
-1. In **Workers & Pages**, create a Pages project from the same GitHub repo.
-   Select the same production branch and set the root directory to `/frontend`.
-2. Use the **Next.js (Static HTML Export)** preset. Set the build command to
-   `STATIC_EXPORT=true npm run build` and output directory to `out`.
-3. Set the environment variable `API_BASE_URL` to the Railway HTTPS origin,
-   without `/api` or a trailing slash. Set it for Production and Preview if you
-   want both environments to work.
-4. Deploy. Open the assigned `*.pages.dev` URL and check `/api/system` on that
-   domain. Cloudflare Pages Functions proxies `/api/*` to Railway, so browser
-   requests stay on the same origin.
+In the existing Pages project, keep the root directory `/frontend`, build
+command `STATIC_EXPORT=true npm run build`, and output directory `out`. Set:
 
-Pushing updates to the connected GitHub branch triggers both platform builds.
-The repository's GitHub Actions checks run separately; review their result
-before treating a deployment as ready.
+| Variable | Value | Scope |
+| --- | --- | --- |
+| `API_BASE_URL` | Railway HTTPS origin, without `/api` or trailing slash | Pages runtime |
+| `PROXY_SHARED_SECRET` | The same generated secret as Railway | Pages runtime, encrypted |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk Production Publishable Key (`pk_live_...`) | Build |
 
-## Custom domain
+Set them for **Production**. Preview builds need matching development Clerk
+keys and an authorized preview origin, so leave preview deployments private
+until configured. Trigger a new deployment after changing build variables.
 
-The `*.pages.dev` URL is free. When the demo is working, buy a domain and add it
-under the Pages project's **Custom domains** settings. Follow Cloudflare's DNS
-instructions. A domain has an annual registration fee even if hosting is free.
+Open `https://tomoplanner.app`, choose **Try the demo**, change something,
+then open an incognito window and confirm the first visitor's changes are not
+there. Next, create an account, sign out, sign back in and confirm its data
+persists. Check `/health` on Railway separately. A direct request to
+`/api/goals` on the Railway domain should return 403.
+
+Pushing to the connected GitHub production branch triggers both deployments.
+Review Railway and Cloudflare build logs, then run the checks above after each
+release. The domain renewal is a separate annual cost.

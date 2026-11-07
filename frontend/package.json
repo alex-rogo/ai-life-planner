@@ -13,6 +13,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@clerk/react": "^6.18.6",
     "next": "^16.4.5",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

@@ -70,6 +70,64 @@ h1, h2 { margin: 0; }
 .spacer { flex: 1; }
 .status-line { font-family: var(--mono); font-size: 13px; color: var(--muted); }
 .avatar { width: 40px; height: 40px; border-radius: 20px; border: 1px solid var(--control); background: var(--paper); color: var(--ink); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.exit-link { border: 0; background: transparent; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.exit-link:hover { color: var(--ink); }
+
+/* Public entry uses the same paper, ink, accent and category palette as the planner. */
+.entry-shell { min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); }
+.entry-header, .entry-footer { display: flex; align-items: center; justify-content: space-between; padding: 22px var(--gutter); }
+.entry-header { background: var(--paper); border-bottom: 1px solid var(--line); }
+.entry-footer { margin-top: auto; border-top: 1px solid var(--line); color: var(--muted); font: 12px var(--mono); }
+.entry-main { width: min(1200px, 100%); margin: auto; padding: 64px var(--gutter); display: grid; grid-template-columns: 1.05fr 0.95fr; gap: clamp(40px, 6vw, 100px); align-items: center; }
+.entry-copy { display: flex; flex-direction: column; align-items: flex-start; }
+.entry-eyebrow { font: 600 12px var(--mono); letter-spacing: .1em; color: var(--accent-ink); }
+.entry-copy h1 { max-width: 620px; margin: 18px 0; font-size: clamp(52px, 6vw, 84px); line-height: .95; letter-spacing: -.045em; }
+.entry-copy > p:not(.entry-note) { max-width: 530px; font-size: 20px; line-height: 1.5; color: var(--muted); }
+.entry-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 24px; }
+.entry-primary, .entry-secondary { min-height: 48px; padding: 0 22px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 12px; text-decoration: none; font-size: 15px; font-weight: 700; }
+.entry-primary { background: var(--accent); color: var(--on-accent); }
+.entry-primary:hover { color: var(--on-accent); background: var(--accent-focus); }
+.entry-secondary { background: var(--paper); color: var(--ink); border: 1px solid var(--control); }
+.entry-secondary:hover { color: var(--ink); border-color: var(--ink); }
+.entry-note { margin-top: 18px; color: var(--muted); font-size: 13px; }
+.entry-preview { padding: 24px; background: var(--paper); border: 1px solid var(--line); border-radius: 20px; box-shadow: 0 22px 65px var(--shadow-soft); display: flex; flex-direction: column; gap: 12px; transform: rotate(1deg); }
+.entry-preview-top { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 8px; }
+.entry-preview-top strong { font-size: 20px; }
+.entry-preview-top span { color: var(--muted); font: 11px var(--mono); }
+.entry-preview-row { min-height: 82px; border-radius: 12px; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 14px 18px; border-left: 5px solid; }
+.entry-preview-row span { color: var(--muted); font: 12px var(--mono); }
+.entry-preview-row strong { font-size: 17px; }
+.entry-preview-row.focus { background: var(--focus-bg); border-color: var(--focus); }
+.entry-preview-row.fixed { background: var(--fixed-bg); border-color: var(--fixed); }
+.entry-preview-row.routine { background: var(--routine-bg); border-color: var(--routine); }
+.entry-preview-note { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 14px; border-radius: 12px; background: var(--accent-soft); color: var(--accent-ink); font-size: 14px; }
+.entry-preview-note span { font-weight: 700; white-space: nowrap; }
+.entry-wait { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 12px; padding: 24px; }
+.entry-wait h1 { font-size: 28px; }
+.entry-wait p { color: var(--muted); }
+.entry-auth { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 32px 16px; }
+.entry-back { align-self: flex-start; margin: 0 auto; width: min(430px,100%); color: var(--muted); text-decoration: none; font-weight: 700; }
+.entry-auth-intro { width: min(430px,100%); }
+.entry-auth-intro h1 { font-size: 42px; margin: 8px 0; }
+.entry-auth-intro p { color: var(--muted); margin: 0; }
+.first-plan { margin-bottom: 18px; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.first-plan h2 { font-size: 24px; }
+.first-plan p { max-width: 530px; color: var(--muted); line-height: 1.5; }
+.first-plan .primary { flex: none; padding: 0 18px; }
+@media (max-width: 800px) {
+  .entry-main { grid-template-columns: 1fr; padding: 48px 24px; }
+  .entry-preview { transform: none; }
+  .entry-copy h1 { font-size: clamp(48px, 12vw, 72px); }
+}
+@media (max-width: 480px) {
+  .entry-main { gap: 34px; }
+  .entry-copy > p:not(.entry-note) { font-size: 17px; }
+  .entry-actions { align-items: stretch; width: 100%; }
+  .entry-actions a { width: 100%; }
+  .entry-preview { padding: 16px; }
+  .entry-preview-note { flex-direction: column; }
+  .entry-footer span:last-child { display: none; }
+}
 /* Side panels keep the mockup's widths at 1440px; the calendar takes all remaining width. */
 .columns { display: flex; flex-wrap: nowrap; gap: 24px; padding: 16px var(--gutter) 32px; align-items: flex-start; }
 /* Side panels stay in view while the page scrolls the calendar; long lists scroll inside them. */

@@ -4,7 +4,7 @@ from typing import Annotated
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
+from app import workspaces
 from app.config import get_settings
 from app.db import clock_offset, get_db, utcnow
 from app.models import (
@@ -72,6 +73,24 @@ app.add_middleware(
 DB = Annotated[Session, Depends(get_db, scope="function")]
 
 
+@app.middleware("http")
+async def private_api_gateway(request: Request, call_next):
+    """Only the Pages proxy may reach a public multi-user API directly on Railway."""
+    if settings.workspace_root and request.url.path.startswith("/api/"):
+        local_dev = not settings.proxy_shared_secret and request.client and request.client.host in ("127.0.0.1", "::1")
+        if not settings.proxy_shared_secret and not local_dev:
+            return JSONResponse(status_code=503, content={"detail": "API gateway is not configured."})
+        key = request.headers.get("X-Tomo-Proxy-Key", "")
+        if not local_dev and not secrets.compare_digest(key, settings.proxy_shared_secret):
+            return JSONResponse(status_code=403, content={"detail": "Use the Tomo website."})
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            origin = request.headers.get("Origin", "")
+            parties = [p.strip() for p in settings.clerk_authorized_parties.split(",") if p.strip()]
+            if origin and origin not in parties:
+                return JSONResponse(status_code=403, content={"detail": "Invalid request origin."})
+    return await call_next(request)
+
+
 @app.exception_handler(ValidationError)
 async def service_validation_error(_, exc):
     return JSONResponse(
@@ -93,9 +112,21 @@ async def unavailable_database(_, exc):
 
 
 @app.get("/health", tags=["system"])
-def health(db: DB):
-    resources.preferences(db)
+def health():
     return {"status": "ok"}
+
+
+@app.post("/api/workspaces/demo", tags=["workspaces"])
+def start_demo(request: Request, response: Response):
+    if not settings.workspace_root:
+        return {"mode": "demo"}
+    return workspaces.start_demo(request, response, settings)
+
+
+@app.get("/api/workspaces/status", tags=["workspaces"])
+def workspace_status(request: Request, db: DB):
+    resources.preferences(db)
+    return {"mode": getattr(request.state, "workspace_mode", "legacy")}
 
 
 @app.get("/api/goals", response_model=list[GoalOut], tags=["goals"])
@@ -277,9 +308,11 @@ def get_overview(
 
 
 @app.post("/api/assistant", response_model=ChatOut, tags=["assistant"])
-def assistant(data: ChatIn, db: DB):
+def assistant(data: ChatIn, db: DB, request: Request):
     """Interpret a request and preview its effect. Apply the returned proposal to commit it."""
-    return pipeline.propose(db, data, settings)
+    mode = getattr(request.state, "workspace_mode", "legacy")
+    selected = settings.model_copy(update={"ai_mode": "demo"}) if mode == "demo" else settings
+    return pipeline.propose(db, data, selected)
 
 
 @app.get("/api/proposals/current", response_model=ProposalOut | None, tags=["assistant"])
@@ -312,20 +345,22 @@ def messages(db: DB):
 
 
 @app.get("/api/system", tags=["system"])
-def system_status(db: DB):
+def system_status(db: DB, request: Request):
     prefs = resources.preferences(db)
+    mode = getattr(request.state, "workspace_mode", "legacy")
+    ai_mode = "demo" if mode == "demo" else settings.ai_mode
     return {
         "now": utcnow(),
         "demo_clock": bool(clock_offset()),
-        "ai_mode": settings.ai_mode,
+        "ai_mode": ai_mode,
         "gemini_configured": bool(
-            settings.deepseek_api_key if settings.ai_mode == "deepseek" else settings.gemini_api_key
+            settings.deepseek_api_key if ai_mode == "deepseek" else settings.gemini_api_key
         ),
         "gemini_model": settings.deepseek_model
-        if settings.ai_mode == "deepseek"
+        if ai_mode == "deepseek"
         else settings.gemini_model,
         "demo_commands": DEMO_COMMANDS,
-        "sample_data_tools": demo.allowed(settings),
+        "sample_data_tools": mode == "demo" if settings.workspace_root else demo.allowed(settings),
         "calendars": [
             {
                 "name": c.name,
@@ -397,14 +432,18 @@ def disconnect_calendar(identifier: UUID, db: DB):
 
 
 @app.post("/api/demo/clear", status_code=204, tags=["demo"])
-def clear_demo(db: DB):
+def clear_demo(db: DB, request: Request):
     """Demo mode only: empty the planner (settings are kept)."""
-    demo.clear(db, settings)
+    if settings.workspace_root and getattr(request.state, "workspace_mode", None) != "demo":
+        raise HTTPException(403, "Only a demo can be reset.")
+    demo.clear(db, settings.model_copy(update={"ai_mode": "demo"}) if settings.workspace_root else settings)
     return Response(status_code=204)
 
 
 @app.post("/api/demo/populate", status_code=204, tags=["demo"])
-def populate_demo(db: DB):
+def populate_demo(db: DB, request: Request):
     """Demo mode only: replace everything with the sample week and the demo Canvas feed."""
-    demo.populate(db, settings)
+    if settings.workspace_root and getattr(request.state, "workspace_mode", None) != "demo":
+        raise HTTPException(403, "Only a demo can be reset.")
+    demo.populate(db, settings.model_copy(update={"ai_mode": "demo"}) if settings.workspace_root else settings)
     return Response(status_code=204)

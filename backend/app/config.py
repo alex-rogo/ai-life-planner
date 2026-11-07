@@ -7,6 +7,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
     database_url: str = "postgresql+psycopg://assistant:assistant@localhost:5432/assistant"
+    # Empty keeps the original single-user local setup. Set this to a persistent volume
+    # directory for the public multi-user deployment.
+    workspace_root: str = ""
+    clerk_jwt_key: str = ""
+    clerk_authorized_parties: str = "https://tomoplanner.app"
+    proxy_shared_secret: str = ""
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
     # DeepSeek speaks the OpenAI chat-completions protocol.

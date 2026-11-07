@@ -9,8 +9,13 @@ async function ask(page: Page, message: string) {
   expect((await response).status()).toBe(200);
 }
 
+async function enterDemo(page: Page) {
+  await page.goto("/demo");
+  await expect(page).toHaveURL(/\/app$/, { timeout: 30000 });
+}
+
 test("day view: propose, preview, apply and undo through chat", async ({ page }) => {
-  await page.goto("/");
+  await enterDemo(page);
   await expect(page.getByRole("heading", { level: 1 })).toContainText("—");
   const tasks = page.getByRole("region", { name: "Tasks" });
   await expect(tasks).toContainText("Dentist cleaning");
@@ -38,7 +43,8 @@ test("day view: propose, preview, apply and undo through chat", async ({ page })
 });
 
 test("week and month views, collapsible chat and clarification", async ({ page }) => {
-  await page.goto("/week");
+  await enterDemo(page);
+  await page.goto("/app/week");
   await expect(page.getByRole("region", { name: "This week's schedule" })).toBeVisible();
   await expect(page.locator(".dayhead")).toHaveCount(7);
   await expect(page.getByText("Goals this week")).toBeVisible();
@@ -56,11 +62,11 @@ test("week and month views, collapsible chat and clarification", async ({ page }
   await page.getByRole("tab", { name: "Month" }).click();
   await expect(page.locator(".month-cell")).toHaveCount(42);
   await page.locator(".month-cell.today").click();
-  await expect(page).toHaveURL(/\/(\?date=.*)?$/);
+  await expect(page).toHaveURL(/\/app(\?date=.*)?$/);
 });
 
 test("dialogs: add an appointment and review settings; no overflow on phones", async ({ page }) => {
-  await page.goto("/");
+  await enterDemo(page);
   await page.getByRole("button", { name: "Add something important" }).click();
   const dialog = page.getByRole("dialog", { name: "Add something important" });
   await dialog.getByLabel("What is it?").fill("Physio check-up");
@@ -80,7 +86,7 @@ test("dialogs: add an appointment and review settings; no overflow on phones", a
   await settings.getByRole("button", { name: "Cancel" }).click();
 
   await page.setViewportSize({ width: 375, height: 812 });
-  for (const path of ["/", "/week", "/month"]) {
+  for (const path of ["/app", "/app/week", "/app/month"]) {
     await page.goto(path);
     await expect(page.locator(".schedule")).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

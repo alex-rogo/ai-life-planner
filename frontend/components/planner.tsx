@@ -12,7 +12,7 @@ import { DayView, MonthView, WeekView } from "./schedule";
 import Sidebar from "./sidebar";
 import ThemeToggle from "./theme-toggle";
 
-const PATHS: Record<View, string> = { day: "/", week: "/week", month: "/month" };
+const PATHS: Record<View, string> = { day: "/app", week: "/app/week", month: "/app/month" };
 const STEP_LABEL: Record<View, [string, string, string]> = {
   day: ["Previous day", "Today", "Next day"], week: ["Previous week", "This week", "Next week"], month: ["Previous month", "This month", "Next month"],
 };
@@ -77,11 +77,11 @@ function useStage(sessions: Session[], range: string): Stage {
 type Dialog = { type: "event"; obligation?: Obligation } | { type: "goal"; goalId?: string } | { type: "settings" } | null;
 
 /** Mounted once by the (planner) layout, so switching Day/Week/Month keeps state and cached data. */
-export default function Planner() {
+export default function Planner({ mode = "demo", onExit }: { mode?: "demo" | "account"; onExit?: () => void }) {
   const router = useRouter();
   const params = useSearchParams();
   const pathname = usePathname();
-  const view: View = pathname.startsWith("/week") ? "week" : pathname.startsWith("/month") ? "month" : "day";
+  const view: View = pathname.startsWith("/app/week") ? "week" : pathname.startsWith("/app/month") ? "month" : "day";
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [ranges, setRanges] = useState<Record<string, RangeData>>({});
@@ -260,6 +260,7 @@ export default function Planner() {
         <div className="spacer" />
         <span className="status-line">{status}</span>
         <ThemeToggle />
+        {onExit && <button className="exit-link" onClick={onExit}>{mode === "demo" ? "Leave demo" : "Sign out"}</button>}
         <button className="avatar" aria-label="Profile and settings" onClick={() => setDialog({ type: "settings" })}>
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
         </button>
@@ -289,6 +290,14 @@ export default function Planner() {
                 <div className="stats">{overview?.stats.map(s => <div key={s.label} className="stat"><span>{s.label}</span><span>{s.value}</span></div>)}</div>
               )}
             </div>
+            {mode === "account" && overview && overview.goals.length === 0 && stage.sessions.length === 0 && (
+              <div className="card panel first-plan">
+                <span className="entry-eyebrow">YOUR FIRST PLAN</span>
+                <h2>Start with one thing that matters.</h2>
+                <p>Add a goal, then give it a task. Tomo will find time for it around your commitments.</p>
+                <button className="primary" onClick={() => setDialog({ type: "goal" })}>Add your first goal</button>
+              </div>
+            )}
             {overview && timezone && (view === "day"
               ? <DayView day={day} today={today} timezone={timezone} sessions={stage.sessions} overview={overview} now={now} previewing={!!pending} stage={stage} />
               : view === "week"

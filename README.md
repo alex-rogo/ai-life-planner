@@ -29,7 +29,7 @@ npm ci
 npm run dev
 ```
 
-Open [localhost:3000](http://localhost:3000). The seed command adds sample data and is optional. Demo mode works without an API key and supports the sample commands shown in chat.
+Open [localhost:3000](http://localhost:3000), then choose **Try the demo**. The seed command adds sample data and is optional in the original local single-user setup. Demo mode works without an API key and supports the sample commands shown in chat. The local sign-in screen appears once Clerk keys are configured.
 
 If a preview is already running, stop it with `.\scripts\stop-preview.ps1` first. Database data persists between container restarts.
 
@@ -82,10 +82,10 @@ See [architecture details](docs/ARCHITECTURE.md).
 
 ## Limitations
 
-- Built for one local user; no accounts, calendar sync, or cloud deployment.
+- Local Docker setup remains single-user. The hosted setup supports separate Clerk accounts and private demo workspaces; see [hosting](docs/HOSTING.md).
 - Plans use 15-minute slots with a maximum 14-day horizon.
 - Demo chat accepts limited commands (shown as chips under the chat). Live Gemini behavior has not been validated against the provider.
-- Elapsed sessions are assumed done; tell the assistant if you skipped something. There is no calendar sync, so the design's "Synced with Google Calendar" status shows the local assistant mode instead.
+- Elapsed sessions are assumed done; tell the assistant if you skipped something. Calendar feeds import on a schedule but do not write changes back to Google, Canvas, or Outlook.
 - Activity signals are estimates and never automatically mark work complete.
 
 ## Documentation

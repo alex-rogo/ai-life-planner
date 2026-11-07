@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
+from fastapi import Request
 from sqlalchemy import DateTime, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.types import TypeDecorator
@@ -48,8 +49,15 @@ engine = make_engine(get_settings().database_url)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 
-def get_db():
-    with SessionLocal() as db:
+def get_db(request: Request):
+    settings = get_settings()
+    if settings.workspace_root:
+        from app.workspaces import workspace_session
+
+        factory = workspace_session(request, settings)
+    else:
+        factory = SessionLocal
+    with factory() as db:
         try:
             yield db
             db.commit()
