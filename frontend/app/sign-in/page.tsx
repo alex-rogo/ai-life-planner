@@ -11,7 +11,7 @@ export default function SignInPage() {
     <div className="entry-auth-intro"><span className="entry-eyebrow">YOUR OWN SPACE</span><h1>Welcome back.</h1><p>Your plan stays yours, across visits and devices.</p></div>
     {process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
       ? <SignIn
-          routing="hash" forceRedirectUrl="/app" signUpForceRedirectUrl="/app"
+          routing="hash" forceRedirectUrl="/app" signUpForceRedirectUrl="/app" signUpUrl="/sign-up"
           appearance={{ variables: {
             colorPrimary: "#D9531E", colorPrimaryForeground: "#FFFFFF",
             colorBackground: "var(--paper)", colorForeground: "var(--ink)",
