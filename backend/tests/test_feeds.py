@@ -165,3 +165,149 @@ def test_demo_feed_requires_the_demo_provider(client):
     assert response.status_code == 422
     with pytest.raises(HTTPException):
         feeds.parse("not a calendar", NOW, TZ)
+
+
+def test_date_only_canvas_assignments_are_due_at_1159_pm_and_stay_listed_all_day(db):
+    from app.services.overview import _upcoming
+
+    extra = [
+        "BEGIN:VEVENT",
+        "UID:event-assignment-777",
+        "DTSTAMP:20270101T000000Z",
+        "SUMMARY:Exercise - Binary Search [CS 341]",
+        "DTSTART;VALUE=DATE:20270104",
+        "END:VEVENT",
+        "BEGIN:VEVENT",
+        "UID:event-assignment-778",
+        "DTSTAMP:20270101T000000Z",
+        "SUMMARY:Quiz 2 [CS 341]",
+        "DTSTART:20270104T170000Z",
+        "DTEND:20270104T170000Z",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+    feed = FEED.replace("END:VCALENDAR", "\n".join(extra))
+    items = {i["title"]: i for i in feeds.parse(feed, NOW, TZ)}
+    binary = items["Exercise - Binary Search"]
+    assert binary["kind"] == "deadline"
+    assert binary["starts_at"] == binary["ends_at"] == datetime(2027, 1, 4, 23, 59, tzinfo=TZ)
+    assert items["Campus holiday"]["kind"] == "all_day"
+
+    source = CalendarSource(name="Canvas", provider="canvas", url="https://school.example/feed.ics")
+    db.add(source)
+    db.flush()
+    feeds.store(db, source, list(items.values()), NOW)
+    externals = db.scalars(select(ExternalEvent)).all()
+
+    def listed(now):
+        today = now.astimezone(TZ).date()
+        items = _upcoming(db, [], [], [], today, TZ, now, externals)
+        return [(i["title"], i["meta"]) for i in items]
+
+    # Monday 08:00: today's items in due-time order, then later days (the holiday is listed too).
+    at_eight = listed(NOW)
+    assert at_eight[:2] == [
+        ("Quiz 2", "Due 9:00 am · CS 341"),
+        ("Exercise - Binary Search", "Due 11:59 pm · CS 341"),
+    ]
+    assert ("Campus holiday", "All day") in at_eight
+    # 10:00: the quiz is past due but stays in today's list instead of disappearing.
+    assert listed(NOW + timedelta(hours=2))[0] == ("Quiz 2", "Was due 9:00 am · CS 341")
+    # Tuesday: yesterday's items are gone.
+    assert "Quiz 2" not in dict(listed(NOW + timedelta(days=1)))
+
+
+def test_an_empty_feed_never_wipes_imported_deadlines(db, monkeypatch):
+    source = CalendarSource(name="Canvas", provider="canvas", url="https://school.example/feed.ics")
+    db.add(source)
+    db.flush()
+    feeds.store(db, source, feeds.parse(FEED, NOW, TZ), NOW)
+    before = len(db.scalars(select(ExternalEvent)).all())
+    empty = "\n".join(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Test//EN", "END:VCALENDAR"])
+    monkeypatch.setattr(feeds, "_download", lambda url: empty)
+    result = feeds.sync(db, source)
+    assert len(db.scalars(select(ExternalEvent)).all()) == before
+    assert "empty" in result["last_error"]
+    # The failed attempt is recorded, but the last good import keeps its own time.
+    assert result["last_success_at"] == NOW
+    assert result["last_synced_at"] != NOW
+
+
+def test_items_due_on_the_last_evening_of_the_window_are_imported():
+    # 5:30 pm Los Angeles on the window's last day is already the next day in UTC.
+    last_day = NOW.astimezone(TZ).date() + timedelta(days=feeds.FUTURE_DAYS - 1)
+    due = datetime.combine(last_day, datetime.min.time().replace(hour=17, minute=30), tzinfo=TZ)
+    stamp = due.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    feed = FEED.replace(
+        "END:VCALENDAR",
+        "\n".join(
+            [
+                "BEGIN:VEVENT",
+                "UID:event-assignment-999",
+                "DTSTAMP:20270101T000000Z",
+                "SUMMARY:Group project [CSS 360]",
+                f"DTSTART:{stamp}",
+                f"DTEND:{stamp}",
+                "END:VEVENT",
+                "END:VCALENDAR",
+            ]
+        ),
+    )
+    items = {i["title"]: i for i in feeds.parse(feed, NOW, TZ)}
+    assert items["Group project"]["starts_at"] == due
+
+
+def test_importing_an_ics_file_and_reimporting_replaces_it(client):
+    from app.db import utcnow
+
+    def ics(*titles):
+        day = utcnow().date() + timedelta(days=3)
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Google Inc//Google Calendar//EN"]
+        for i, title in enumerate(titles):
+            lines += [
+                "BEGIN:VEVENT",
+                f"UID:evt-{i}",
+                "DTSTAMP:20260101T000000Z",
+                f"SUMMARY:{title}",
+                f"DTSTART:{day:%Y%m%d}T180000Z",
+                f"DTEND:{day:%Y%m%d}T190000Z",
+                "END:VEVENT",
+            ]
+        return "\n".join([*lines, "END:VCALENDAR"])
+
+    first = client.post(
+        "/api/calendars/import",
+        json={"filename": "Work shifts.ics", "content": ics("Shift", "Team dinner")},
+    )
+    assert first.status_code == 201
+    body = first.json()
+    assert (body["name"], body["events"], body["imported_file"]) == ("Work shifts", 2, True)
+    assert body["url_hint"] == "Imported file · Work shifts.ics"
+    titles = {s["title"] for s in client.get("/api/sessions").json() if s["external"]}
+    assert {"Shift", "Team dinner"} <= titles
+
+    again = client.post(
+        "/api/calendars/import", json={"filename": "Work shifts.ics", "content": ics("Shift")}
+    ).json()
+    assert again["id"] == body["id"] and again["events"] == 1
+    assert len(client.get("/api/calendars").json()) == 1
+    assert client.post(f"/api/calendars/{body['id']}/sync").status_code == 409
+
+    tomo = client.get("/api/export.ics").text
+    refused = client.post(
+        "/api/calendars/import", json={"filename": "tomo-schedule.ics", "content": tomo}
+    )
+    assert refused.status_code == 422 and "Tomo export" in refused.json()["detail"]
+    empty = "\n".join(["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//X//EN", "END:VCALENDAR"])
+    assert (
+        client.post(
+            "/api/calendars/import", json={"filename": "e.ics", "content": empty}
+        ).status_code
+        == 422
+    )
+
+
+def test_imported_files_never_count_as_stale_feeds(db):
+    db.add(CalendarSource(name="Shifts", provider="other", url="file:Shifts.ics"))
+    db.flush()
+    assert feeds.stale_sources(db, NOW) == []

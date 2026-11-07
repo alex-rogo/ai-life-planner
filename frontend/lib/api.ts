@@ -1,8 +1,8 @@
-export async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+export async function api<T>(path: string, method = "GET", body?: unknown, timeoutMs = 120000): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method, headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));

@@ -11,9 +11,9 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 // Rotating status lines while Tomo works: one set for planning a request, one for applying.
 const THINKING = {
   asking: [
-    "Working out what would change…", "Shuffling your week like a deck of cards…", "Asking the calendar nicely…",
-    "Finding the gaps between the gaps…", "Weighing deadlines against coffee breaks…", "Nudging blocks into place…",
-    "Making sure nothing double-books…", "Almost there, tidying the edges…",
+    "Thinking it through…", "Reading back what you’ve told me…", "Weighing a few options…",
+    "Sketching a week that fits…", "Checking it doesn’t cram your days…", "Making sure you get rest days…",
+    "Double-checking it against your routine…", "Almost there, tidying the edges…",
   ],
   updating: ["Updating your plan…", "Putting everything where it goes…", "Dusting off the calendar…"],
 };
@@ -115,11 +115,19 @@ export default function Assistant(props: Props) {
   }, [messages.length, asking, pending?.id, error]);
   const submit = (value: string) => { if (value.trim() && !busy) { onSend(value); setText(""); } };
 
+  // Tappable answers belong to the latest message only, and go away once the user answers.
+  const latest = messages.at(-1);
+  const choices = !asking && latest?.role === "assistant" ? latest.options ?? [] : [];
   const items: ReactNode[] = messages.slice(-8).map(m => m.role === "user"
     ? <div key={m.id} className="bubble mine">{m.content}</div>
     : (
       <div key={m.id} className="bubble">
         <Reply text={m.content} />
+        {m === latest && choices.length > 0 && (
+          <div className="options" role="group" aria-label="Quick answers">
+            {choices.map(o => <button key={o} className="option" onClick={() => submit(o)} disabled={busy}>{o}</button>)}
+          </div>
+        )}
         {undoable && m.proposal_id === undoable.id && m.content.startsWith("Done.") && (
           <button className="ghost" onClick={() => onDecide(undoable.id, "undo")} disabled={busy}>Undo</button>
         )}

@@ -2,7 +2,9 @@
 
 Imported items are read-only and fixed. Timed events block planning like obligations but may
 overlap anything; zero-length items (Canvas assignments) are deadlines; date-only items are
-all-day notes. Network access happens before any database lock is taken.
+all-day notes, except Canvas assignments: Canvas exports an assignment due at 11:59 pm as a bare
+date, so those become deadlines at 11:59 pm local time. Network access happens before any
+database lock is taken, and a feed that suddenly comes back empty never wipes what was imported.
 """
 
 import re
@@ -22,10 +24,16 @@ from app.db import utcnow
 from app.models import CalendarSource, ExternalEvent
 from app.services.resources import preferences
 
-PAST_DAYS, FUTURE_DAYS = 14, 60
+# The whole term ahead (finals included), plus two weeks back.
+PAST_DAYS, FUTURE_DAYS = 14, 180
 STALE = timedelta(minutes=15)
-MAX_BYTES = 5_000_000
+MAX_BYTES = 25_000_000
+# Canvas assignment (and checkpoint) UIDs; everything else in a Canvas feed is a calendar event.
+CANVAS_ASSIGNMENT = re.compile(r"^event-(?:sub-)?assignment-")
+END_OF_DAY = time(23, 59)
 DEMO_URL = "demo://canvas"
+# An uploaded .ics file is a source whose "url" is file:<filename>; it never syncs.
+FILE_PREFIX = "file:"
 # Canvas titles end with the course in brackets: "Lab 4: Hash tables [CS 241]".
 COURSE = re.compile(r"^(?P<title>.*?)\s*\[(?P<course>[^\[\]]{1,120})\]\s*$")
 FIELDS = ("kind", "title", "course", "location", "starts_at", "ends_at")
@@ -49,6 +57,8 @@ def url_hint(url: str) -> str:
     """Enough to recognise a feed without revealing its secret token."""
     if url == DEMO_URL:
         return "Built-in demo feed"
+    if url.startswith(FILE_PREFIX):
+        return f"Imported file · {url[len(FILE_PREFIX) :]}"
     return f"{urlparse(url).netloc} · …{url[-4:]}"
 
 
@@ -68,7 +78,7 @@ def _download(url: str) -> str:
             for chunk in response.iter_bytes():
                 body += chunk
                 if len(body) > MAX_BYTES:
-                    raise HTTPException(422, "That calendar feed is larger than 5 MB.")
+                    raise HTTPException(422, "That calendar feed is larger than 25 MB.")
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         hint = " The link may have been reset; copy it again." if status in (401, 403, 404) else ""
@@ -96,7 +106,12 @@ def parse(text: str, now: datetime, tz: ZoneInfo) -> list[dict]:
     except ValueError as exc:
         raise HTTPException(422, "That link didn't return a calendar feed (.ics).") from exc
     today = now.astimezone(tz).date()
-    window = (today - timedelta(days=PAST_DAYS), today + timedelta(days=FUTURE_DAYS))
+    # Aware local midnights: a bare date here is read as UTC, which cut off items due on the
+    # last evening of the window (a 5:30 pm due time is already the next day in UTC).
+    window = (
+        _local_midnight(today - timedelta(days=PAST_DAYS), tz),
+        _local_midnight(today + timedelta(days=FUTURE_DAYS), tz),
+    )
     try:
         events = list(recurring_ical_events.of(calendar).between(*window))
     except Exception as exc:  # malformed repeat rules and the like
@@ -115,8 +130,12 @@ def parse(text: str, now: datetime, tz: ZoneInfo) -> list[dict]:
                 if isinstance(end, date) and not isinstance(end, datetime) and end > start
                 else start + timedelta(days=1)
             )
-            starts_at, ends_at = _local_midnight(start, tz), _local_midnight(last, tz)
-            kind = "deadline" if uid.startswith("event-assignment-") else "all_day"
+            if CANVAS_ASSIGNMENT.match(uid):
+                starts_at = ends_at = datetime.combine(start, END_OF_DAY, tzinfo=tz)
+                kind = "deadline"
+            else:
+                starts_at, ends_at = _local_midnight(start, tz), _local_midnight(last, tz)
+                kind = "all_day"
         else:
             starts_at = _aware(start, tz)
             if isinstance(end, datetime):
@@ -126,7 +145,7 @@ def parse(text: str, now: datetime, tz: ZoneInfo) -> list[dict]:
             else:
                 ends_at = starts_at
             # Canvas assignments are zero-length items at their due time.
-            deadline = uid.startswith("event-assignment-") or ends_at <= starts_at
+            deadline = bool(CANVAS_ASSIGNMENT.match(uid)) or ends_at <= starts_at
             kind = "deadline" if deadline else "event"
             if deadline:
                 ends_at = starts_at
@@ -174,7 +193,7 @@ def store(db: Session, source: CalendarSource, items: list[dict], now: datetime)
     for row in existing.values():
         db.delete(row)
         changed = True
-    source.last_synced_at, source.last_error = now, ""
+    source.last_synced_at, source.last_success_at, source.last_error = now, now, ""
     db.flush()
     return changed
 
@@ -183,7 +202,8 @@ def stale_sources(db: Session, now: datetime) -> list[CalendarSource]:
     return [
         s
         for s in db.scalars(select(CalendarSource).order_by(CalendarSource.created_at))
-        if not s.last_synced_at or now - s.last_synced_at >= STALE
+        if not s.url.startswith(FILE_PREFIX)
+        and (not s.last_synced_at or now - s.last_synced_at >= STALE)
     ]
 
 
@@ -316,7 +336,9 @@ def out(db: Session, source: CalendarSource) -> dict:
         "provider": source.provider,
         "url_hint": url_hint(source.url),
         "last_synced_at": source.last_synced_at,
+        "last_success_at": source.last_success_at,
         "last_error": source.last_error,
+        "imported_file": source.url.startswith(FILE_PREFIX),
         "events": kinds["event"],
         "deadlines": kinds["deadline"],
         "all_day": kinds["all_day"],
@@ -355,8 +377,39 @@ def connect(db: Session, provider: str, name: str, url: str) -> dict:
     return out(db, source)
 
 
+def import_file(db: Session, filename: str, content: str) -> dict:
+    """Import an uploaded .ics file. Importing a file with the same name again replaces it."""
+    if len(content.encode()) > MAX_BYTES:
+        raise HTTPException(422, "That calendar file is larger than 25 MB.")
+    if "PRODID:-//Tomo//" in content[:2000]:
+        raise HTTPException(
+            422,
+            "That file is a Tomo export, so everything in it is already in Tomo. Import it into "
+            "another calendar app instead.",
+        )
+    now, tz = _settled(db)
+    items = parse(content, now, tz)
+    if not items:
+        raise HTTPException(
+            422, "That file has no events between two weeks ago and six months from now."
+        )
+    preferences(db, lock=True)
+    url = f"{FILE_PREFIX}{filename}"[:2000]
+    source = db.scalar(select(CalendarSource).where(CalendarSource.url == url))
+    if source is None:
+        name = filename.rsplit(".", 1)[0].strip() or "Imported calendar"
+        source = CalendarSource(name=name[:80], provider="other", url=url)
+        db.add(source)
+        db.flush()
+    store(db, source, items, now)
+    _replan(db)
+    return out(db, source)
+
+
 def sync(db: Session, source: CalendarSource) -> dict:
     """Refresh one feed. A failed fetch is recorded on the source rather than raised."""
+    if source.url.startswith(FILE_PREFIX):
+        raise HTTPException(409, "An imported file can't sync. Import the updated file again.")
     identifier = source.id
     now, tz = _settled(db)
     try:
@@ -365,6 +418,11 @@ def sync(db: Session, source: CalendarSource) -> dict:
         items, error = None, str(exc.detail)
     preferences(db, lock=True)
     source = require_source(db, identifier)
+    if items == [] and db.scalar(
+        select(ExternalEvent.id).where(ExternalEvent.source_id == source.id).limit(1)
+    ):
+        # Feeds glitch; never let an empty reply silently delete every imported deadline.
+        items, error = None, "The feed came back empty, so Tomo kept your existing items."
     if items is None:
         source.last_synced_at, source.last_error = now, error
         db.flush()

@@ -86,7 +86,9 @@ def session_views(db: Session, rows) -> list[dict]:
                 deadline=task.deadline.isoformat() if task.deadline else None,
             )
         else:
-            view.update(category="fixed", subtitle="Fixed", deadline=None)
+            view.update(
+                category="fixed", subtitle="Travel" if row.travel else "Fixed", deadline=None
+            )
         views.append(view)
     return views
 

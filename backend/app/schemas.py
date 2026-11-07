@@ -46,6 +46,16 @@ class TaskCreate(Schema):
         default_factory=list, max_length=20
     )
     category: Category = "focus"
+    window_start: Clock | None = Field(
+        default=None, description="Earliest local start time of day for sessions, HH:MM"
+    )
+    window_end: Clock | None = Field(
+        default=None, description="Latest local end time of day for sessions, HH:MM"
+    )
+    days: list[Annotated[int, Field(ge=0, le=6)]] | None = Field(
+        default=None,
+        description="Weekdays sessions may fall on, 0 = Monday ... 6 = Sunday; null = any day",
+    )
 
     @field_validator("activity_apps")
     @classmethod
@@ -64,6 +74,14 @@ class TaskCreate(Schema):
             raise ValueError("A recurring occurrence must fit one session")
         if self.not_before and self.deadline and self.not_before >= self.deadline:
             raise ValueError("Earliest start must precede deadline")
+        if (self.window_start is None) != (self.window_end is None):
+            raise ValueError("Give both ends of the time-of-day window, or neither")
+        if self.window_start and self.window_start >= self.window_end:
+            raise ValueError("The time-of-day window must start before it ends")
+        if self.days is not None:
+            self.days = sorted(set(self.days)) or None
+        if self.days and self.recurrence == "weekly" and self.sessions_per_week > len(self.days):
+            raise ValueError("A weekly task needs at least as many allowed days as sessions")
         return self
 
 
@@ -82,6 +100,9 @@ class TaskPatch(Schema):
     sessions_per_week: int | None = Field(default=None, ge=1, le=7)
     activity_apps: list[str] | None = None
     category: Category | None = None
+    window_start: Clock | None = None
+    window_end: Clock | None = None
+    days: list[Annotated[int, Field(ge=0, le=6)]] | None = None
 
 
 class TaskOut(TaskCreate):
@@ -92,15 +113,25 @@ class TaskOut(TaskCreate):
 
 class ObligationCreate(Schema):
     title: Title
-    weekdays: list[Annotated[int, Field(ge=0, le=6)]] = Field(min_length=1, max_length=7)
+    weekdays: list[Annotated[int, Field(ge=0, le=6)]] = Field(
+        min_length=1, max_length=7, description="0 = Monday through 6 = Sunday"
+    )
     start_time: Clock
     end_time: Clock
     start_date: date | None = None
     end_date: date | None = None
     kind: EventKind = "commitment"
+    travel_minutes: int = Field(
+        default=0, ge=0, le=180, description="One-way travel time; Tomo adds the trips"
+    )
+    travel_mode: str = Field(default="", max_length=40, description="How, e.g. Bus, Drive, Walk")
 
     @model_validator(mode="after")
     def bounds(self):
+        # A one-off event happens on its date, whatever weekday was sent; a mismatch (easy for an
+        # assistant to get wrong) would otherwise make the event silently never occur.
+        if self.start_date and self.start_date == self.end_date:
+            self.weekdays = [self.start_date.weekday()]
         if self.start_time >= self.end_time:
             raise ValueError("Obligations must start and end on the same day")
         if len(set(self.weekdays)) != len(self.weekdays):
@@ -163,6 +194,7 @@ class SessionOut(Schema):
     status: str
     locked: bool
     credited_minutes: int
+    travel: bool = False
 
 
 class SessionView(SessionOut):
@@ -242,6 +274,7 @@ class MessageOut(Schema):
     content: str
     mode: str
     proposal_id: UUID | None = None
+    options: list[str] | None = None
     created_at: datetime
 
 
@@ -296,6 +329,12 @@ class UpcomingItem(Schema):
     note: str = ""
     obligation_id: UUID | None = None
     goal_id: UUID | None = None
+    key: str
+    done: bool = False
+
+
+class ItemCheck(Schema):
+    done: bool
 
 
 class GoalProgress(Schema):
@@ -338,13 +377,20 @@ class CalendarIn(Schema):
     url: str = Field(min_length=1, max_length=2000)
 
 
+class CalendarFile(Schema):
+    filename: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=25_000_000)
+
+
 class CalendarOut(Schema):
     id: UUID
     name: str
     provider: Provider
     url_hint: str
     last_synced_at: datetime | None
+    last_success_at: datetime | None = None
     last_error: str
+    imported_file: bool = False
     events: int
     deadlines: int
     all_day: int

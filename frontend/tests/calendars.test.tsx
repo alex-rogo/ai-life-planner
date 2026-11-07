@@ -6,7 +6,7 @@ import type { CalendarSource } from "../lib/types";
 
 const canvas: CalendarSource = {
   id: "c1", name: "Canvas", provider: "canvas", url_hint: "school.instructure.com · ….ics",
-  last_synced_at: "2026-10-13T15:00:00Z", last_error: "", events: 63, deadlines: 8, all_day: 1,
+  last_synced_at: "2026-10-13T15:00:00Z", last_success_at: "2026-10-13T15:00:00Z", last_error: "", events: 63, deadlines: 8, all_day: 1,
 };
 afterEach(() => vi.unstubAllGlobals());
 

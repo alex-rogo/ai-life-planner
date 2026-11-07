@@ -36,10 +36,10 @@ it("shows a playful, rotating status while Tomo works", async () => {
   vi.useFakeTimers();
   render(<Thinking asking />);
   const status = screen.getByRole("status");
-  expect(status).toHaveAccessibleName("Working out what would change…");
-  expect(status).toHaveTextContent("Working out what would change…");
+  expect(status).toHaveAccessibleName("Thinking it through…");
+  expect(status).toHaveTextContent("Thinking it through…");
   act(() => { vi.advanceTimersByTime(2200); });
-  expect(status).toHaveTextContent("Shuffling your week like a deck of cards…");
+  expect(status).toHaveTextContent("Reading back what you’ve told me…");
   vi.useRealTimers();
 });
 
@@ -55,4 +55,17 @@ it("runs tool chips, asking for a second click before destructive ones", async (
   expect(clear).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("button", { name: "Click again to clear everything" }));
   expect(clear).toHaveBeenCalledOnce();
+});
+
+it("offers the latest reply's options as buttons that send the answer", async () => {
+  const send = vi.fn();
+  const messages = [
+    { id: "1", role: "user" as const, content: "four in a row", mode: "deepseek", proposal_id: null },
+    { id: "2", role: "assistant" as const, content: "Which four days?", mode: "deepseek", proposal_id: null, options: ["Mon-Thu at 4 pm", "Fri-Mon at 4 pm"] },
+  ];
+  render(<Assistant view="week" open onToggle={() => {}} inputRef={{ current: null }} briefLabel="" brief="" prompts={[]}
+    messages={messages} proposal={null} suggestions={[]} asking="" busy={false} error=""
+    onSend={send} onDecide={() => {}} onAnswer={() => {}} tools={[]} />);
+  await userEvent.click(screen.getByRole("button", { name: "Fri-Mon at 4 pm" }));
+  expect(send).toHaveBeenCalledWith("Fri-Mon at 4 pm");
 });

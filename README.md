@@ -51,6 +51,14 @@ GEMINI_MODEL=gemini-2.5-flash
 
 Then run `docker compose up -d --force-recreate backend`. Keep API keys out of Git.
 
+For DeepSeek, set `AI_MODE=deepseek` and `DEEPSEEK_API_KEY` instead. Tomo uses the fast
+`deepseek-chat` model and normally makes one AI call per request. Invalid model
+responses may need one repair call. Set
+`DEEPSEEK_PLANNER_MODEL=deepseek-reasoner` to use the reasoning model, or
+`AI_REVIEW_ENABLED=true` to add a second AI review call for proposals. Both options
+increase response time and token use. Provider latency and token counts are logged
+by the backend at INFO level when usage data is returned by the API.
+
 ## Architecture
 
 ```mermaid
@@ -88,3 +96,4 @@ See [architecture details](docs/ARCHITECTURE.md).
 - [API reference](docs/API.md)
 - [Windows companion](docs/DESKTOP_AGENT.md)
 - [Validation status](docs/IMPLEMENTATION_STATUS.md)
+- [Hosting and GitHub deployments](docs/HOSTING.md)

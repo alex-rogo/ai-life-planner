@@ -19,6 +19,10 @@ from app.services.resources import preferences
 
 SLOT = timedelta(minutes=15)
 MAX_UNITS = 100
+# Day balancing: each day's booked time (fixed events included) beyond 2, 4 and 6 hours costs
+# progressively more, so work spreads over the week instead of piling onto its first days.
+LOAD_TIERS = ((8, 1), (16, 2), (24, 4))
+LOAD_WEIGHT = 10
 
 
 @dataclass
@@ -51,6 +55,58 @@ def work_allowed(stamp: datetime, prefs, tz: ZoneInfo) -> bool:
     return in_window(minute, prefs.available_start, prefs.available_end) and not in_window(
         minute, prefs.sleep_start, prefs.sleep_end
     )
+
+
+# Going home between two events is only worth it with at least this long there.
+HOME_MINUTES = 60
+
+
+def travel_blocks(obligations, start, end, tz):
+    """Trips for events with travel time: one before each day's first event and one home after the
+    last. Events too close together to go home in between share their trips, so back-to-back
+    classes get one ride there and one ride home."""
+    movers = {o.id: o for o in obligations if o.travel_minutes}
+    days = defaultdict(list)
+    for event in expand_obligations(list(movers.values()), start, end, tz):
+        days[event.starts_at.astimezone(tz).date()].append(event)
+    trips = []
+    for events in days.values():
+        events.sort(key=lambda e: e.starts_at)
+        clusters = [[events[0]]]
+        for event in events[1:]:
+            last = max(clusters[-1], key=lambda e: e.ends_at)
+            round_trip = (
+                movers[last.obligation_id].travel_minutes
+                + movers[event.obligation_id].travel_minutes
+                + HOME_MINUTES
+            )
+            if event.starts_at - last.ends_at < timedelta(minutes=round_trip):
+                clusters[-1].append(event)
+            else:
+                clusters.append([event])
+        for cluster in clusters:
+            first = cluster[0]
+            last = max(cluster, key=lambda e: e.ends_at)
+            for event, a, b, title in (
+                (first, None, first.starts_at, f"to {first.title}"),
+                (last, last.ends_at, None, "home"),
+            ):
+                obligation = movers[event.obligation_id]
+                span = timedelta(minutes=obligation.travel_minutes)
+                mode = obligation.travel_mode.strip().capitalize() or "Travel"
+                trips.append(
+                    ScheduleSession(
+                        obligation_id=event.obligation_id,
+                        title=f"{mode} {title}"[:200],
+                        starts_at=a or b - span,
+                        ends_at=b or a + span,
+                        locked=True,
+                        status="planned",
+                        credited_minutes=0,
+                        travel=True,
+                    )
+                )
+    return trips
 
 
 def expand_obligations(obligations, start, end, tz):
@@ -202,8 +258,16 @@ def solve(units, fixed, start, end, prefs, tz):
         all(work_allowed(start + slot * SLOT + timedelta(minutes=m), prefs, tz) for m in range(15))
         for slot in range(horizon)
     ]
+    placements = []  # per unit: [(local day, selector)] for the daily load terms
     for i, unit in enumerate(units):
         size = unit.minutes // 15
+        task = unit.task
+        window = (
+            (clock_minutes(task.window_start), clock_minutes(task.window_end))
+            if getattr(task, "window_start", None) and getattr(task, "window_end", None)
+            else None
+        )
+        allowed_days = set(task.days) if getattr(task, "days", None) else None
         candidates, days = [], []
         for slot in range(horizon - size + 1):
             a, b = start + slot * SLOT, start + (slot + size) * SLOT
@@ -215,10 +279,18 @@ def solve(units, fixed, start, end, prefs, tz):
                 continue
             if any(a < y and b > x for x, y in occupied):
                 continue
+            if allowed_days is not None and a.astimezone(tz).weekday() not in allowed_days:
+                continue
+            if window:
+                local = a.astimezone(tz)
+                minute = local.hour * 60 + local.minute
+                if minute < window[0] or minute + unit.minutes > window[1]:
+                    continue
             candidates.append(slot)
             days.append((a.astimezone(tz).date() - start.astimezone(tz).date()).days)
         if not candidates:
             decisions.append(None)
+            placements.append([])
             continue
         present = model.new_bool_var(f"present_{i}")
         begin = model.new_int_var_from_domain(cp_model.Domain.from_values(candidates), f"start_{i}")
@@ -232,14 +304,20 @@ def solve(units, fixed, start, end, prefs, tz):
         late = model.new_int_var(0, horizon + 192, f"late_{i}")
         selectors = []
         day_terms = []
+        placed = []
+        # Time of day in slots, so a habit lands at a consistent hour rather than anywhere.
+        clock = model.new_int_var(0, horizon + 192, f"clock_{i}")
         for local_day in sorted(set(days)):
             selector = model.new_bool_var(f"day_{i}_{local_day}")
             selectors.append(selector)
+            placed.append((local_day, selector))
             day_terms.append(local_day * selector)
             slots = [slot for slot, d in zip(candidates, days) if d == local_day]
             model.add(begin >= min(slots)).only_enforce_if(selector)
             model.add(begin <= max(slots)).only_enforce_if(selector)
             calendar_day = start.astimezone(tz).date() + timedelta(days=local_day)
+            midnight = math.floor((local_midnight(calendar_day, tz) - start) / SLOT)
+            model.add(clock == begin - midnight).only_enforce_if(selector)
             pref_a = datetime.combine(
                 calendar_day, time.fromisoformat(prefs.preferred_start), tzinfo=tz
             ).astimezone(UTC)
@@ -251,15 +329,16 @@ def solve(units, fixed, start, end, prefs, tz):
                 selector
             )
         model.add(sum(selectors) == present)
+        model.add(clock == 0).only_enforce_if(present.Not())
+        placements.append(placed)
         model.add(day == sum(day_terms))
         model.add(early == 0).only_enforce_if(present.Not())
         model.add(late == 0).only_enforce_if(present.Not())
-        earliness = model.new_int_var(0, horizon, f"earliness_{i}")
-        model.add(earliness == begin).only_enforce_if(present)
-        model.add(earliness == 0).only_enforce_if(present.Not())
-        penalties.extend(
-            [earliness * unit.task.priority, (early + late) * prefs.preferred_weight * 12]
-        )
+        # One-off work leans a little toward sooner (by day, not by slot, so it doesn't crowd
+        # the first morning); recurring habits have no pull toward the start of the week.
+        if task.recurrence == "none":
+            penalties.append(day * task.priority * 10)
+        penalties.extend([clock, (early + late) * prefs.preferred_weight * 12])
         if unit.previous:
             old_slot = int((unit.previous.starts_at - start) / SLOT)
             displacement = model.new_int_var(0, horizon * 2, f"displacement_{i}")
@@ -301,19 +380,53 @@ def solve(units, fixed, start, end, prefs, tz):
             same = model.new_bool_var(f"same_day_{i}_{j}")
             model.add(day_a != day_b).only_enforce_if([p, q, same.Not()])
             penalties.append(same * prefs.spread_weight * 100)
+            if getattr(units[i].task, "days", None):
+                continue  # The user chose the days (maybe "four in a row"); don't fight it.
+            # Back-to-back days (no rest day between workouts) are allowed but discouraged.
+            apart = model.new_int_var(0, 14, f"apart_{i}_{j}")
+            model.add_abs_equality(apart, day_a - day_b)
+            adjacent = model.new_bool_var(f"adjacent_{i}_{j}")
+            model.add(apart >= 2).only_enforce_if([p, q, adjacent.Not()])
+            penalties.append(adjacent * prefs.spread_weight * 6)
             # Symmetry breaking makes identical weekly occurrences cheaper to solve.
             model.add(a < c).only_enforce_if([p, q])
+    local_start = start.astimezone(tz).date()
+    span_days = (end.astimezone(tz).date() - local_start).days + 1
+    load_bound = 0
+    for local_day in range(span_days):
+        day_a = max(start, local_midnight(local_start + timedelta(days=local_day), tz))
+        day_b = min(end, local_midnight(local_start + timedelta(days=local_day + 1), tz))
+        if day_b <= day_a:
+            continue
+        fixed_slots = sum(max(0, int((min(y, day_b) - max(x, day_a)) / SLOT)) for x, y in occupied)
+        flexible = [
+            (units[i].minutes // 15) * selector
+            for i, placed in enumerate(placements)
+            for d, selector in placed
+            if d == local_day
+        ]
+        if not flexible:
+            continue
+        load = fixed_slots + sum(flexible)
+        for threshold, weight in LOAD_TIERS:
+            excess = model.new_int_var(0, 200, f"excess_{local_day}_{threshold}")
+            model.add(excess >= load - threshold)
+            penalties.append(excess * weight * LOAD_WEIGHT)
+            load_bound += 200 * weight * LOAD_WEIGHT
     # This coefficient dominates the maximum bounded secondary penalty, so
     # tuning preferences cannot accidentally outweigh priority-weighted coverage.
     n = len(units)
     secondary_bound = n * (
-        horizon * (5 + 24 * prefs.stability_weight) + (horizon + 192) * 24 * prefs.preferred_weight
+        horizon * (5 + 24 * prefs.stability_weight)
+        + (horizon + 192) * (24 * prefs.preferred_weight + 1)
+        + 14 * 5 * 10
     )
+    secondary_bound += load_bound
     secondary_bound += (
         n
         * (n - 1)
         // 2
-        * (12 * prefs.break_weight + 12 * prefs.context_weight + 100 * prefs.spread_weight)
+        * (12 * prefs.break_weight + 12 * prefs.context_weight + 106 * prefs.spread_weight)
     )
     reward = sum(
         d[0] * u.minutes * (u.task.priority + 1) * (secondary_bound + 1)
@@ -357,10 +470,17 @@ def generate_plan(db: Session, request: PlanRequest, now: datetime | None = None
         and s.task_id
     ]
     old_ids = {s.id for s in old}
+    # Trips depend on every event that day, so upcoming ones are rebuilt on each plan.
+    stale_trips = {
+        s.id
+        for s in all_sessions
+        if s.travel and s.status == "planned" and s.ends_at > start and s.starts_at < end
+    }
     persisted_fixed = [
         s
         for s in all_sessions
         if s.id not in old_ids
+        and s.id not in stale_trips
         and s.starts_at < end
         and s.ends_at > start
         and s.status in ("planned", "completed")
@@ -387,23 +507,20 @@ def generate_plan(db: Session, request: PlanRequest, now: datetime | None = None
             )
     obligations = db.scalars(select(Obligation)).all()
     fixed = list(persisted_fixed)
-    existing_keys = {(s.obligation_id, s.starts_at) for s in all_sessions if s.obligation_id}
+    existing_keys = {
+        (s.obligation_id, s.starts_at) for s in all_sessions if s.obligation_id and not s.travel
+    }
     new_obligations = []
     for item in expand_obligations(obligations, day_begin, end, tz):
         if (item.obligation_id, item.starts_at) not in existing_keys:
             new_obligations.append(item)
             if item.ends_at > start:
                 fixed.append(item)
-    # Reject overlapping fixed blocks rather than treating solver infeasibility as missing work.
-    ordered = sorted(fixed, key=lambda x: x.starts_at)
-    for left, right in zip(ordered, ordered[1:]):
-        if left.ends_at > right.starts_at:
-            raise HTTPException(
-                409,
-                f"Fixed blocks conflict: {left.title} and {right.title}. Existing schedule retained.",
-            )
-    # Imported calendar events block flexible work but may overlap anything, including each other,
-    # so they join after the overlap check. Tomo never moves them.
+    trips = [t for t in travel_blocks(obligations, day_begin, end, tz) if t.ends_at > start]
+    fixed += trips
+    # Fixed blocks may overlap each other (a bus ride around a class, a double-booked meeting):
+    # they only filter where flexible work can start, so overlaps never make the plan infeasible.
+    # Imported calendar events block flexible work the same way. Tomo never moves either.
     fixed += db.scalars(
         select(ExternalEvent).where(
             ExternalEvent.kind == "event",
@@ -452,10 +569,10 @@ def generate_plan(db: Session, request: PlanRequest, now: datetime | None = None
                     credited_minutes=0,
                 )
             )
-    removed = old_ids - reused
+    removed = (old_ids - reused) | stale_trips
     if removed:
         db.execute(delete(ScheduleSession).where(ScheduleSession.id.in_(removed)))
-    db.add_all(new_obligations + replacements)
+    db.add_all(new_obligations + trips + replacements)
     covered = (first + timedelta(days=request.days - 1)).isoformat()
     if not prefs.planned_through or prefs.planned_through < covered:
         prefs.planned_through = covered

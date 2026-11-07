@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.schemas import (
     ActivityBatch,
+    CalendarFile,
     CalendarIn,
     CalendarOut,
     ChatIn,
@@ -33,6 +34,7 @@ from app.schemas import (
     DecisionOut,
     GoalCreate,
     GoalOut,
+    ItemCheck,
     MessageOut,
     ObligationCreate,
     ObligationOut,
@@ -49,7 +51,7 @@ from app.schemas import (
     TaskOut,
     TaskPatch,
 )
-from app.services import activity, demo, feeds, overview, resources, upkeep
+from app.services import activity, checklist, demo, export, feeds, overview, resources, upkeep
 from app.services.ai import pipeline
 from app.services.ai.interpreter import DEMO_COMMANDS
 from app.services.scheduler import generate_plan
@@ -161,7 +163,12 @@ def get_preferences(db: DB):
 
 @app.put("/api/preferences", response_model=Preferences, tags=["preferences"])
 def put_preferences(data: Preferences, db: DB):
+    moved = resources.preferences(db).timezone != data.timezone
     row = resources.save_preferences(db, data)
+    if moved:
+        # Date-only and floating feed times depend on the timezone: re-import on the next read.
+        for source in db.scalars(select(CalendarSource)):
+            source.last_synced_at = None
     upkeep.replan(db)
     return row
 
@@ -224,6 +231,28 @@ def edit_session(identifier: UUID, data: SessionPatch, db: DB):
     if data.status in ("skipped", "missed"):
         upkeep.replan(db)
     return upkeep.session_views(db, [row])[0]
+
+
+@app.put("/api/checklist/{item}", status_code=204, tags=["schedule"])
+def check_item(item: str, data: ItemCheck, db: DB):
+    """Check an item in the sidebar's task list off, or back on."""
+    resources.preferences(db, lock=True)
+    checklist.set_done(db, item, data.done)
+    return Response(status_code=204)
+
+
+@app.get("/api/export.ics", tags=["schedule"])
+def export_calendar(
+    db: DB,
+    weeks: Annotated[int, Query(ge=1, le=26)] = 8,
+    imported: bool = False,
+):
+    """Download the plan as an .ics file to import into another calendar app."""
+    return Response(
+        export.build(db, weeks, imported),
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="tomo-schedule.ics"'},
+    )
 
 
 @app.post("/api/schedule/plan", response_model=PlanResult, tags=["schedule"])
@@ -289,8 +318,12 @@ def system_status(db: DB):
         "now": utcnow(),
         "demo_clock": bool(clock_offset()),
         "ai_mode": settings.ai_mode,
-        "gemini_configured": bool(settings.gemini_api_key),
-        "gemini_model": settings.gemini_model,
+        "gemini_configured": bool(
+            settings.deepseek_api_key if settings.ai_mode == "deepseek" else settings.gemini_api_key
+        ),
+        "gemini_model": settings.deepseek_model
+        if settings.ai_mode == "deepseek"
+        else settings.gemini_model,
         "demo_commands": DEMO_COMMANDS,
         "sample_data_tools": demo.allowed(settings),
         "calendars": [
@@ -298,7 +331,8 @@ def system_status(db: DB):
                 "name": c.name,
                 "provider": c.provider,
                 "last_synced_at": c.last_synced_at,
-                "error": bool(c.last_error),
+                "last_success_at": c.last_success_at,
+                "error": c.last_error,
             }
             for c in db.scalars(select(CalendarSource).order_by(CalendarSource.created_at))
         ],
@@ -343,6 +377,12 @@ def calendars(db: DB):
 def connect_calendar(data: CalendarIn, db: DB):
     """Subscribe to an .ics feed. Its events import as fixed, read-only blocks and deadlines."""
     return feeds.connect(db, data.provider, data.name, data.url)
+
+
+@app.post("/api/calendars/import", response_model=CalendarOut, status_code=201, tags=["calendars"])
+def import_calendar(data: CalendarFile, db: DB):
+    """Import an .ics file once: fixed, read-only events and deadlines, like a feed that never syncs."""
+    return feeds.import_file(db, data.filename, data.content)
 
 
 @app.post("/api/calendars/{identifier}/sync", response_model=CalendarOut, tags=["calendars"])

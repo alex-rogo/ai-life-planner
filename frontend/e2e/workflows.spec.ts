@@ -12,7 +12,12 @@ async function ask(page: Page, message: string) {
 test("day view: propose, preview, apply and undo through chat", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1 })).toContainText("—");
-  await expect(page.getByRole("region", { name: "Coming up" })).toContainText("Dentist cleaning");
+  const tasks = page.getByRole("region", { name: "Tasks" });
+  await expect(tasks).toContainText("Dentist cleaning");
+  await tasks.getByRole("checkbox", { name: "Check off Dentist cleaning" }).click();
+  await expect(tasks.getByRole("checkbox", { name: "Uncheck Dentist cleaning" })).toBeChecked({ timeout: 45000 });
+  await tasks.getByRole("checkbox", { name: "Uncheck Dentist cleaning" }).click();
+  await expect(tasks.getByRole("checkbox", { name: "Check off Dentist cleaning" })).not.toBeChecked({ timeout: 45000 });
   await expect(page.getByRole("button", { name: /Build confidence in C\+\+/ })).toBeVisible();
   for (const label of ["Focus work", "Fixed commitment", "Routine", "Personal goal", "Errand"]) {
     await expect(page.locator(".legend", { hasText: label })).toBeVisible();
@@ -65,7 +70,8 @@ test("dialogs: add an appointment and review settings; no overflow on phones", a
   await dialog.getByLabel("Date").fill(nextWeek);
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(dialog).toBeHidden({ timeout: 45000 });
-  await expect(page.getByRole("region", { name: "Coming up" })).toContainText("Physio check-up");
+  const tasks = page.getByRole("region", { name: "Tasks" });
+  await expect(tasks).toContainText("Physio check-up");
 
   await page.getByRole("button", { name: "Profile and settings" }).click();
   const settings = page.getByRole("dialog", { name: "Settings" });

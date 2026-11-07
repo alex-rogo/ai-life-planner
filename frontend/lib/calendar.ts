@@ -59,6 +59,25 @@ export function isoWeek(day: string): number {
 export interface Block {
   session: Session; top: number; height: number; start: number; end: number;
   done: boolean; proposed: boolean; tag: string; kind: "done" | "proposed" | "due" | "plain";
+  /** Overlapping blocks sit side by side: this block's lane out of `lanes` in its overlap group. */
+  lane: number; lanes: number;
+}
+
+/** Assign side-by-side lanes to blocks that overlap in time (first free lane, in start order). */
+export function assignLanes<T extends { start: number; end: number; lane: number; lanes: number }>(blocks: T[]): T[] {
+  const order = [...blocks].sort((a, b) => a.start - b.start || b.end - a.end);
+  let group: T[] = [], ends: number[] = [], groupEnd = -1;
+  const close = () => { for (const b of group) b.lanes = ends.length; group = []; ends = []; };
+  for (const b of order) {
+    if (b.start >= groupEnd) close();
+    const free = ends.findIndex(e => e <= b.start);
+    b.lane = free < 0 ? ends.length : free;
+    ends[b.lane] = b.end;
+    group.push(b);
+    groupEnd = Math.max(groupEnd, b.end);
+  }
+  close();
+  return blocks;
 }
 /** Local minutes [start, end) a session occupies on one day, or null if it doesn't touch it. */
 export function spanOn(session: Session, day: string, timezone: string): [number, number] | null {
@@ -116,7 +135,7 @@ export function yAt(scale: Scale, minute: number): number {
 /** Position a session inside one local day column on the given scale. */
 export function layout(sessions: Session[], day: string, timezone: string, scale: Scale, now: Date, previewing: boolean): Block[] {
   const floor = scale.first * 60, ceiling = scale.last * 60;
-  return sessions.flatMap(session => {
+  return assignLanes(sessions.flatMap((session): Block[] => {
     const span = spanOn(session, day, timezone);
     if (!span) return [];
     const [start, end] = span;
@@ -132,9 +151,9 @@ export function layout(sessions: Session[], day: string, timezone: string, scale
     return [{
       session, start, end, done, proposed, tag,
       top: yAt(scale, top), height: Math.max(12, yAt(scale, bottom) - yAt(scale, top)),
-      kind: proposed ? "proposed" : done ? "done" : due ? "due" : "plain",
+      kind: proposed ? "proposed" : done ? "done" : due ? "due" : "plain", lane: 0, lanes: 1,
     }];
-  });
+  }));
 }
 
 /** A block placed in a column (the day index in Week view, 0 in Day view) under its visual key. */
@@ -198,7 +217,7 @@ export function choreograph(before: Placed[], after: Placed[]): Show {
     const b = old.get(a.key);
     if (!b) entering.push(a);
     else if (slot(a) !== slot(b)) moving.push(a);
-    else cues.push({ ...a, phase: a.top === b.top && a.height === b.height ? "stay" : "shift", delay: shiftAt, typeAt: 0, ms: shiftMs });
+    else cues.push({ ...a, phase: a.top === b.top && a.height === b.height && a.lane === b.lane && a.lanes === b.lanes ? "stay" : "shift", delay: shiftAt, typeAt: 0, ms: shiftMs });
   }
   const moveStagger = Math.min(TIMING.moveStagger, TIMING.moveSpread / Math.max(1, moving.length));
   moving.sort((x, y) => x.col - y.col || x.start - y.start).forEach((a, i) => cues.push({ ...a, phase: "move", delay: moveAt + i * moveStagger, typeAt: 0, ms: moveMs }));

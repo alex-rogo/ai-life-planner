@@ -4,6 +4,7 @@ import { addDays, dateKey, dayLabel, minutesOfDay } from "../lib/time";
 import { CATEGORY, LEGEND, TIMING, busyHours, choreograph, fitUnit, hourLabel, hourScale, layout, shortClock, yAt, type Block, type Cue, type Placed, type Scale } from "../lib/calendar";
 import type { Overview, Session } from "../lib/types";
 import type { Stage } from "./planner";
+import { useArrivals } from "../lib/arrivals";
 
 interface Shared { timezone: string; sessions: Session[]; overview: Overview; today: string; }
 
@@ -36,11 +37,29 @@ function useAvailableHeight(ref: RefObject<HTMLElement | null>) {
 }
 
 /** Deadlines and all-day items for one day: dark "due" chips, lighter chips for all-day notes. */
-function DueChips({ overview, day }: { overview: Overview; day: string }) {
-  return <>{overview.deadlines.filter(x => x.date === day).map(x => (
-    <span key={`${x.kind}-${x.title}`} className={`due${x.kind === "all_day" ? " all-day" : ""}`} title={x.kind === "all_day" ? `All day: ${x.title}` : `Due: ${x.title}`}>{x.title}</span>
-  ))}</>;
+type Deadline = Overview["deadlines"][number];
+const dueKey = (x: Deadline) => `${x.date}|${x.kind}|${x.title}`;
+/** New deadlines grow into the DUE row; a row that just appeared fades its label in too. */
+function useDueArrivals(overview: Overview, days: string[], scope: string) {
+  const keys = overview.deadlines.filter(x => days.includes(x.date)).map(dueKey);
+  const fresh = useArrivals(keys, scope);
+  return { fresh, newRow: keys.length > 0 && keys.every(k => fresh.has(k)) };
 }
+
+function DueChips({ overview, day, limit, open, fresh }: { overview: Overview; day: string; limit?: number; open?: boolean; fresh?: Set<string> }) {
+  const chip = (x: Deadline) => (
+    <span key={`${x.kind}-${x.title}`} className={`due${x.kind === "all_day" ? " all-day" : ""}${fresh?.has(dueKey(x)) ? " arrive" : ""}`} title={x.kind === "all_day" ? `All day: ${x.title}` : `Due: ${x.title}`}>{x.title}</span>
+  );
+  const all = overview.deadlines.filter(x => x.date === day);
+  if (!limit || all.length <= limit) return <>{all.map(chip)}</>;
+  // The rest stay mounted and fold open, so expanding grows the row instead of popping chips in.
+  return <>
+    {all.slice(0, limit).map(chip)}
+    <div className={`due-extra${open ? " open" : ""}`} aria-hidden={!open}><div>{all.slice(limit).map(chip)}</div></div>
+    <span className={`due-more${open ? " hidden" : ""}`}>+{all.length - limit} more</span>
+  </>;
+}
+const DUE_LIMIT = 2;
 
 function Legend() {
   return <>{LEGEND.map(l => <span key={l.key} className="legend"><i style={{ background: l.color }} />{l.label}</span>)}</>;
@@ -55,7 +74,9 @@ function HourLines({ scale }: { scale: Scale }) {
 function surface(block: Block): CSSProperties {
   const k = CATEGORY[block.session.category];
   return {
-    background: block.done ? "var(--done-bg)" : block.proposed ? "var(--proposed-bg)" : k.bg,
+    // Trips are hatched so they read as time in transit, not an event.
+    background: block.done ? "var(--done-bg)" : block.proposed ? "var(--proposed-bg)"
+      : block.session.travel ? `repeating-linear-gradient(135deg, ${k.bg} 0 7px, var(--paper) 7px 12px)` : k.bg,
     // Same style either way so a confirmed proposal only fades its outline color.
     outline: block.proposed ? "2px dashed var(--accent)" : "2px dashed transparent",
   };
@@ -114,6 +135,16 @@ function Typed({ text, at, caret }: { text: string; at: number; caret?: boolean 
     </>
   );
 }
+/** How many lines of title fit in `space` px; more than one lets the title wrap. */
+const fitLines = (space: number, lineHeight: number) => Math.max(1, Math.floor(space / lineHeight));
+/** A block title that wraps onto as many lines as the box has room for, then ends with an ellipsis. */
+function Name({ cue, text, lines, done }: { cue: Cue; text: string; lines: number; done: boolean }) {
+  return (
+    <span className={`name${lines > 1 ? " wrap" : ""}`} style={{ color: done ? "var(--muted)" : "var(--ink)", ...(lines > 1 ? { WebkitLineClamp: lines } : {}) }}>
+      <span className="txt"><Text cue={cue} text={text} caret /></span>
+    </span>
+  );
+}
 /** Plain text normally; typed in when the block is entering during a show. */
 function Text({ cue, text, offset = 0, caret }: { cue: Cue; text: string; offset?: number; caret?: boolean }) {
   return cue.phase === "enter" ? <Typed text={text} at={cue.typeAt + offset * TIMING.perChar} caret={caret} /> : <>{text}</>;
@@ -126,16 +157,17 @@ export function DayView({ day, timezone, sessions, overview, today, now, preview
   // Booked hours never shrink below a comfortable reading height; the page scrolls instead.
   const place = (list: Session[], keys: Record<string, string>) => {
     const busy = busyHours(list, [day], timezone, first, last);
-    const scale = hourScale(busy, first, last, fitUnit(busy, available, 64, 140, 72));
+    const scale = hourScale(busy, first, last, fitUnit(busy, available, 88, 160, 92));
     return { scale, placed: layout(list, day, timezone, scale, now, previewing).map(b => ({ ...b, col: 0, key: keys[b.session.id] ?? b.session.id })) };
   };
   const { scale, placed } = place(sessions, stage.keys);
   const { cues, shiftAt } = cuesFor(placed, stage, (list, keys) => place(list, keys).placed);
   const staged = !!stage.before;
+  const due = useDueArrivals(overview, [day], day);
   return (
     <section className="card schedule" aria-label={day === today ? "Today's schedule" : `Schedule for ${dayLabel(day)}`}>
       <div className="schedule-head"><h2>Schedule</h2><Legend /></div>
-      {overview.deadlines.some(x => x.date === day) && <div className="day-due"><span className="due-label">DUE</span><DueChips overview={overview} day={day} /></div>}
+      {overview.deadlines.some(x => x.date === day) && <div className={`day-due${due.newRow ? " arrive-row" : ""}`}><span className="due-label">DUE</span><DueChips overview={overview} day={day} fresh={due.fresh} /></div>}
       <div className={`grid${staged ? " animating" : ""}`} ref={grid} style={{ height: scale.total, marginTop: 10, ["--shift-at" as string]: `${shiftAt}ms` }}>
         <HourLines scale={scale} />
         {cues.map(b => {
@@ -144,12 +176,13 @@ export function DayView({ day, timezone, sessions, overview, today, now, preview
           const sub = b.session.subtitle && !short ? ` · ${b.session.subtitle}` : "";
           const name = b.session.title, range = `${shortClock(b.start)}–${shortClock(b.end)}${sub}`;
           const m = motion(b, staged);
+          const lines = short ? 1 : fitLines(h - 20 - 19, 21);
           return (
             <div key={b.key} className={`block${tight ? " tight" : ""}${m.className}`} data-testid="block" title={`${name} · ${shortClock(b.start)}–${shortClock(b.end)}`}
-              style={{ ...surface(b), top: b.top, height: h, padding: tight ? "2px 12px" : short ? "6px 12px" : "10px 12px", ...m.style }}>
+              style={{ ...surface(b), top: b.top, height: h, ["--lane" as string]: b.lane, ["--lanes" as string]: b.lanes, padding: tight ? "2px 12px" : short ? "6px 12px" : "10px 12px", ...m.style }}>
               <span className="bar" style={{ background: b.done ? "var(--done-bar)" : k.color }} />
               <div className="body" style={{ flexDirection: short ? "row" : "column", gap: short ? 10 : 2, alignItems: short ? "center" : "flex-start" }}>
-                <span className="name" style={{ color: b.done ? "var(--muted)" : "var(--ink)" }}><Text cue={b} text={name} caret /></span>
+                <Name cue={b} text={name} lines={lines} done={b.done} />
                 <span className="range"><Text cue={b} text={range} offset={name.length} /></span>
               </div>
               {b.tag && <span className="tag" style={{ ...TAG[b.kind], ...(b.phase === "enter" ? { ["--tag-at" as string]: `${b.typeAt + (name.length + range.length) * TIMING.perChar}ms` } : {}) }}>{b.tag}</span>}
@@ -163,8 +196,11 @@ export function DayView({ day, timezone, sessions, overview, today, now, preview
 }
 
 /** Week blocks share one layer over all seven columns so a block can travel between days. */
-const columnLeft = (col: number) => `calc(var(--axis) + var(--gap) + ${col} * ((100% - var(--axis) - 7 * var(--gap)) / 7 + var(--gap)) + 2px)`;
-const columnWidth = "calc((100% - var(--axis) - 7 * var(--gap)) / 7 - 4px)";
+const DAY_WIDTH = "((100% - var(--axis) - 7 * var(--gap)) / 7)";
+/** Overlapping blocks split their day's width into lanes with a 2px gutter. */
+const columnLeft = (col: number, lane: number, lanes: number) =>
+  `calc(var(--axis) + var(--gap) + ${col} * (${DAY_WIDTH} + var(--gap)) + 2px + ${lane} * (${DAY_WIDTH} - 2px) / ${lanes})`;
+const columnWidth = (lanes: number) => `calc((${DAY_WIDTH} - 2px) / ${lanes} - 2px)`;
 
 export function WeekView({ start, timezone, sessions, overview, today, now, previewing, stage, onOpenDay }: Shared & { start: string; now: Date; previewing: boolean; stage: Stage; onOpenDay: (day: string) => void }) {
   const first = overview.first_hour, last = overview.last_hour;
@@ -174,13 +210,16 @@ export function WeekView({ start, timezone, sessions, overview, today, now, prev
   // One scale for the whole week keeps the columns aligned: an hour stays full size if any day uses it.
   const place = (list: Session[], keys: Record<string, string>) => {
     const busy = busyHours(list, days, timezone, first, last);
-    const scale = hourScale(busy, first, last, fitUnit(busy, available, 50, 110, 56));
+    const scale = hourScale(busy, first, last, fitUnit(busy, available, 72, 130, 76));
     return { scale, placed: days.flatMap((d, col) => layout(list, d, timezone, scale, now, previewing).map(b => ({ ...b, col, key: keys[b.session.id] ?? b.session.id }))) };
   };
   const { scale, placed } = place(sessions, stage.keys);
   const { cues, shiftAt } = cuesFor(placed, stage, (list, keys) => place(list, keys).placed);
   const staged = !!stage.before;
   const todayCol = days.indexOf(today);
+  const [allDue, setAllDue] = useState(false);
+  const due = useDueArrivals(overview, days, start);
+  const overflow = days.some(d => overview.deadlines.filter(x => x.date === d).length > DUE_LIMIT);
   return (
     <section className="card schedule" aria-label="This week's schedule">
       <div className="schedule-head"><h2>Schedule</h2><Legend /></div>
@@ -197,8 +236,13 @@ export function WeekView({ start, timezone, sessions, overview, today, now, prev
           );
         })}
         {overview.deadlines.some(x => days.includes(x.date)) && <>
-          <div className="due-label">DUE</div>
-          {days.map(d => <div key={d} className="due-cell"><DueChips overview={overview} day={d} /></div>)}
+          <div className={`due-label${due.newRow ? " arrive-fade" : ""}`}>DUE</div>
+          {days.map(d => <div key={d} className="due-cell"><DueChips overview={overview} day={d} limit={DUE_LIMIT} open={allDue} fresh={due.fresh} /></div>)}
+          {overflow && (
+            <div className="due-toggle">
+              <button aria-expanded={allDue} onClick={() => setAllDue(o => !o)}>{allDue ? "Show less" : "Show all due dates"}</button>
+            </div>
+          )}
         </>}
       </div>
       <div className={`grid${staged ? " animating" : ""}`} ref={grid} style={{ height: scale.total, marginTop: 12, ["--shift-at" as string]: `${shiftAt}ms` }}>
@@ -217,8 +261,8 @@ export function WeekView({ start, timezone, sessions, overview, today, now, prev
             const m = motion(b, staged);
             return (
               <div key={b.key} className={`block${h < 24 ? " tight" : ""}${m.className}`} data-testid="block" title={`${b.session.title} · ${range}${b.tag ? ` · ${b.tag}` : ""}`}
-                style={{ ...surface(b), top: b.top, height: h, left: columnLeft(b.col), width: columnWidth, padding: h >= 32 ? "6px 8px" : h >= 22 ? "3px 8px" : "0 8px", ...m.style }}>
-                <span className="name" style={{ color: b.done ? "var(--muted)" : "var(--ink)" }}><Text cue={b} text={b.session.title} caret /></span>
+                style={{ ...surface(b), top: b.top, height: h, left: columnLeft(b.col, b.lane, b.lanes), width: columnWidth(b.lanes), padding: h >= 32 ? "6px 8px" : h >= 22 ? "3px 8px" : "0 8px", ...m.style }}>
+                <Name cue={b} text={b.session.title} lines={h < 24 ? 1 : fitLines(h - (h >= 32 ? 12 : 6) - (h >= 46 ? 16 : 0), 17.5)} done={b.done} />
                 {h >= 46 && <span className="range"><Text cue={b} text={range} offset={b.session.title.length} /></span>}
               </div>
             );

@@ -10,6 +10,7 @@ from app.models import (
     ActivityEvent,
     CalendarSource,
     ChatMessage,
+    CheckedItem,
     ExternalEvent,
     Goal,
     Obligation,
@@ -25,6 +26,7 @@ from app.services.upkeep import replan
 
 # Children before parents. Preferences are settings, not data, so they stay.
 TABLES = [
+    CheckedItem,
     ChatMessage,
     Proposal,
     Suggestion,

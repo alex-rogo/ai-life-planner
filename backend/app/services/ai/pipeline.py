@@ -3,15 +3,16 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.db import utcnow
-from app.models import ChatMessage, Goal, Proposal, ScheduleSession, Task
+from app.models import ChatMessage, Goal, Obligation, Proposal, ScheduleSession, Task
 from app.schemas import (
     ChatIn,
     GoalOut,
+    ObligationOut,
     PlanRequest,
     PlanResult,
     Preferences,
@@ -28,19 +29,86 @@ from app.services.ai.actions import (
     CreateGoal,
     CreateObligation,
     CreateTask,
+    DeleteObligation,
+    Reply,
     Reschedule,
     SetPreference,
+    UpdateObligation,
     UpdateTask,
 )
-from app.services.ai.interpreter import interpret
+from app.services.ai.interpreter import interpret, review
 from app.services.history import fingerprint, restore, snapshot
 from app.services.scheduler import generate_plan, local_midnight
 from app.services.upkeep import session_views, sessions_between
 
+CHANGE_MARKS = {"Added": "NEW", "Moved": "MOVED", "Shortened": "CHANGED", "Extended": "CHANGED"}
+
+
+def week_text(views: list[dict], tz: ZoneInfo) -> str:
+    """The plan as the assistant reads it: one line per day, marks for changes and fixed items."""
+    days: dict[str, list[str]] = {}
+    for v in sorted(views, key=lambda v: v["starts_at"]):
+        if v["status"] not in ("planned", "completed"):
+            continue
+        a = datetime.fromisoformat(v["starts_at"]).astimezone(tz)
+        b = datetime.fromisoformat(v["ends_at"]).astimezone(tz)
+        marks = [
+            m
+            for m in (
+                CHANGE_MARKS.get(v.get("change") or ""),
+                v.get("travel") and "trip",
+                not v.get("task_id") and not v.get("travel") and "fixed",
+                v["status"] == "completed" and "done",
+            )
+            if m
+        ]
+        tag = f" [{', '.join(marks)}]" if marks else ""
+        days.setdefault(f"{a:%a %b} {a.day}", []).append(f"{a:%H:%M}-{b:%H:%M} {v['title']}{tag}")
+    return (
+        "\n".join(f"{day}: " + "; ".join(rows) for day, rows in days.items()) or "Nothing planned."
+    )
+
 
 def context_for(db: Session, now: datetime) -> dict:
+    tz = ZoneInfo(resources.preferences(db).timezone)
+    local = now.astimezone(tz)
+    proposals = {
+        p.id: p for p in db.scalars(select(Proposal).order_by(Proposal.created_at.desc()).limit(30))
+    }
+    messages = reversed(
+        db.scalars(select(ChatMessage).order_by(ChatMessage.created_at.desc()).limit(20)).all()
+    )
+
+    def said(m: ChatMessage) -> dict:
+        entry = {"role": m.role, "content": m.content}
+        proposal = proposals.get(m.proposal_id)
+        if proposal and m.role == "user":
+            entry["proposal"] = {"summary": proposal.title, "status": proposal.status}
+        return entry
+
+    start = local_midnight(local.date(), tz)
+    monday = local.date() - timedelta(days=local.weekday())
+    week_a, week_b = local_midnight(monday, tz), local_midnight(monday + timedelta(days=7), tz)
+    habits = []
+    for task in db.scalars(
+        select(Task).where(Task.status == "pending", Task.recurrence == "weekly")
+    ):
+        planned = db.scalar(
+            select(func.count(ScheduleSession.id)).where(
+                ScheduleSession.task_id == task.id,
+                ScheduleSession.status.in_(("planned", "completed")),
+                ScheduleSession.starts_at >= week_a,
+                ScheduleSession.starts_at < week_b,
+            )
+        )
+        habits.append(
+            f"{task.title}: {planned} of {task.sessions_per_week} sessions this week (Mon-Sun)"
+        )
     return {
         "now": now.isoformat(),
+        "today": f"{local:%A} {local.date().isoformat()}",
+        "week": week_text(_views(db, start, start + timedelta(days=7)), tz),
+        "habits_this_week": habits,
         "preferences": Preferences.model_validate(resources.preferences(db)).model_dump(
             mode="json"
         ),
@@ -52,14 +120,20 @@ def context_for(db: Session, now: datetime) -> dict:
             GoalOut.model_validate(g).model_dump(mode="json")
             for g in db.scalars(select(Goal).order_by(Goal.created_at).limit(100))
         ],
-        "recent_messages": [
-            {"role": m.role, "content": m.content}
-            for m in reversed(
-                db.scalars(
-                    select(ChatMessage).order_by(ChatMessage.created_at.desc()).limit(6)
-                ).all()
-            )
+        # Unconfirmed changes, so a follow-up like "oops, X is on Tuesday" can revise them.
+        "pending_proposal": next(
+            (
+                {"request": p.message, "actions": p.batch.get("actions", [])}
+                for p in db.scalars(select(Proposal).where(Proposal.status == "pending").limit(1))
+            ),
+            None,
+        ),
+        # Existing events, so the assistant avoids duplicates and spots conflicts.
+        "events": [
+            ObligationOut.model_validate(o).model_dump(mode="json")
+            for o in db.scalars(select(Obligation).order_by(Obligation.start_time).limit(100))
         ],
+        "recent_messages": [said(m) for m in messages],
     }
 
 
@@ -151,6 +225,11 @@ def apply_batch(db: Session, batch: ActionBatch, request: PlanRequest, now: date
             resources.update_task(db, action.task_id, action.changes)
         elif isinstance(action, CreateObligation):
             resources.save_obligation(db, action.obligation)
+        elif isinstance(action, UpdateObligation):
+            resources.save_obligation(db, action.obligation, action.obligation_id)
+        elif isinstance(action, DeleteObligation):
+            db.delete(resources.require(db, Obligation, action.obligation_id))
+            db.flush()
         elif isinstance(action, SetPreference):
             if (
                 action.preferences.monitoring_enabled
@@ -189,6 +268,20 @@ def _minutes(view: dict) -> int:
     return int(span.total_seconds() // 60)
 
 
+def _owner(view: dict):
+    return view["task_id"] or (view["obligation_id"], view["title"])
+
+
+def _slots(views: list[dict], tz: ZoneInfo) -> str:
+    """Sessions as days per time range: "Fri, Sat, Sun 4:00 pm-5:00 pm; Mon 7:00 pm-8:30 pm"."""
+    ranges: dict[str, list[str]] = {}
+    for v in sorted(views, key=lambda v: v["starts_at"]):
+        span = f"{_when(v['starts_at'], tz, False)}–{_when(v['ends_at'], tz, False)}"
+        day = datetime.fromisoformat(v["starts_at"]).astimezone(tz).strftime("%a")
+        ranges.setdefault(span, []).append(day)
+    return "; ".join(f"{', '.join(days)} {span}" for span, days in ranges.items())
+
+
 def describe(before: list[dict], after: list[dict], batch: ActionBatch, tz: ZoneInfo):
     """Summarize a plan change as Moved/Shortened/Added/Removed rows and tag the new sessions."""
     old = {v["id"]: v for v in before if v["status"] == "planned"}
@@ -206,11 +299,17 @@ def describe(before: list[dict], after: list[dict], batch: ActionBatch, tz: Zone
             added.remove(view)
             removed.remove(twin)
     changes, tags = [], {}
+    # The solver gives moved work new rows, so changes are grouped per task (or fixed item) and
+    # described as a whole: "Fri, Sat, Sun 4:00 pm-5:00 pm (was Mon, Wed 4:00 pm-5:00 pm)".
+    groups: dict = {}
     for view in added:
-        # The solver gives moved work a new row, so pair it with a removed row of the same task.
-        twin = next((r for r in removed if r["task_id"] and r["task_id"] == view["task_id"]), None)
-        if twin:
-            removed.remove(twin)
+        groups.setdefault(_owner(view), ([], []))[0].append(view)
+    for view in removed:
+        groups.setdefault(_owner(view), ([], []))[1].append(view)
+    for new_rows, old_rows in groups.values():
+        title = (new_rows or old_rows)[0]["title"]
+        if len(new_rows) == 1 and len(old_rows) == 1:
+            twin, view = old_rows[0], new_rows[0]
             before_m, after_m = _minutes(twin), _minutes(view)
             if after_m == before_m:
                 kind = "Moved"
@@ -218,15 +317,16 @@ def describe(before: list[dict], after: list[dict], batch: ActionBatch, tz: Zone
             else:
                 kind = "Shortened" if after_m < before_m else "Extended"
                 detail = f"{before_m} → {after_m} min at {_when(view['starts_at'], tz)}"
+        elif new_rows and old_rows:
+            kind = "Moved"
+            detail = f"{_slots(new_rows, tz)} (was {_slots(old_rows, tz)})"
+        elif new_rows:
+            kind, detail = "Added", _slots(new_rows, tz)
         else:
-            kind = "Added"
-            detail = f"{_when(view['starts_at'], tz)}–{_when(view['ends_at'], tz, False)}"
-        tags[view["id"]] = kind
-        changes.append({"kind": kind, "title": view["title"], "detail": detail})
-    for view in removed:
-        changes.append(
-            {"kind": "Removed", "title": view["title"], "detail": _when(view["starts_at"], tz)}
-        )
+            kind, detail = "Removed", _slots(old_rows, tz)
+        for view in new_rows:
+            tags[view["id"]] = kind
+        changes.append({"kind": kind, "title": title, "detail": detail})
     scheduled = {c["title"] for c in changes}
     for action in batch.actions:
         if isinstance(action, CreateGoal):
@@ -275,22 +375,41 @@ def _out(db: Session, row: Proposal) -> dict:
     ).model_dump(mode="json")
 
 
-def _say(db: Session, mode: str, content: str, role="assistant", proposal_id=None):
-    db.add(ChatMessage(role=role, content=content, mode=mode, proposal_id=proposal_id))
+def _say(db: Session, mode: str, content: str, role="assistant", proposal_id=None, options=None):
+    db.add(
+        ChatMessage(
+            role=role, content=content, mode=mode, proposal_id=proposal_id, options=options or None
+        )
+    )
 
 
 def propose(db: Session, data: ChatIn, settings: Settings) -> dict:
     """Interpret a request and dry-run it. Nothing changes until the proposal is applied."""
     now = utcnow()
     # Interpret before acquiring the write lock; network latency must not hold DB locks.
-    batch = interpret(settings, data.message, context_for(db, now))
-    clarifications = [a.question for a in batch.actions if isinstance(a, Clarify)]
+    context = context_for(db, now)
+    batch = interpret(settings, data.message, context)
+    said = [
+        a.question if isinstance(a, Clarify) else a.message
+        for a in batch.actions
+        if isinstance(a, (Clarify, Reply))
+    ]
+    work = [a for a in batch.actions if not isinstance(a, (Clarify, Reply))]
     defaults = list(batch.defaults)
-    if clarifications:
-        reply = " ".join(clarifications)
+    if said and work and not any(isinstance(a, Clarify) for a in batch.actions):
+        # Talk alongside changes becomes part of the proposal instead of being lost.
+        batch = batch.model_copy(
+            update={"actions": work, "explanation": " ".join([batch.explanation, *said])[:2000]}
+        )
+        said = []
+    if said:
+        reply = "\n\n".join(said)
+        options = [o for a in batch.actions if isinstance(a, (Clarify, Reply)) for o in a.options][
+            :4
+        ]
         resources.preferences(db, lock=True)
         _say(db, settings.ai_mode, data.message, role="user")
-        _say(db, settings.ai_mode, reply)
+        _say(db, settings.ai_mode, reply, options=options)
         db.flush()
         return {
             "reply": reply,
@@ -303,23 +422,45 @@ def propose(db: Session, data: ChatIn, settings: Settings) -> dict:
     start, end = _window(data.plan, now, tz)
     base = fingerprint(snapshot(db))
     before = _views(db, start, end)
-    plan = apply_batch(db, batch, data.plan, now)
-    after = _views(db, start, end)
-    changes = describe(before, after, batch, tz)
+
+    def dry_run(candidate: ActionBatch):
+        plan = apply_batch(db, candidate, data.plan, now)
+        after = _views(db, start, end)
+        return plan, after, describe(before, after, candidate, tz)
+
+    plan, after, changes = dry_run(batch)
+    # The assistant checks the week its proposal actually produces, and may revise it once.
+    missing = [f"{u.title}: {u.minutes} min ({u.reason})" for u in plan.unscheduled]
+    verdict = review(settings, data.message, context, batch, week_text(after, tz), missing)
+    if verdict and verdict.verdict == "revise" and verdict.revised:
+        revised = [a for a in verdict.revised.actions if not isinstance(a, (Clarify, Reply))]
+        if revised:
+            db.rollback()
+            batch = verdict.revised.model_copy(update={"actions": revised})
+            defaults = list(batch.defaults)
+            plan, after, changes = dry_run(batch)
     result = snapshot(db)
     # The dry run is discarded; only the reviewed proposal (and its exact outcome) is stored.
     db.rollback()
     resources.preferences(db, lock=True)
     for stale in db.scalars(select(Proposal).where(Proposal.status == "pending")):
         stale.status = "discarded"
-    title = batch.explanation.strip().rstrip(".")
+    title = (verdict.summary if verdict else batch.explanation).strip().rstrip(
+        "."
+    ) or "Proposed changes"
     footer = _footer(plan)
-    if defaults:
+    if verdict and verdict.concerns:
+        footer += " Heads up: " + " ".join(c.strip().rstrip(".") + "." for c in verdict.concerns)
+    # A reviewed proposal's summary already explains its choices; the raw assumptions would only
+    # repeat it at length.
+    if defaults and not verdict:
         footer += " Assumed: " + "; ".join(defaults)
     row = Proposal(
         message=data.message,
         title=title,
-        batch=batch.model_dump(mode="json"),
+        # Only what the assistant actually set: re-running a stored edit must not reset the
+        # fields it left alone.
+        batch=batch.model_dump(mode="json", exclude_unset=True),
         plan=data.plan.model_dump(mode="json"),
         changes=changes,
         footer=footer,
@@ -371,8 +512,7 @@ def apply_proposal(db: Session, identifier: UUID, settings: Settings) -> dict:
     row.status = "applied"
     row.snapshot = before_state
     row.fingerprint = fingerprint(snapshot(db))
-    moved = [f"{c['title']}: {c['detail']}" for c in row.changes if c["kind"] != "Kept"]
-    reply = "Done. " + ("; ".join(moved[:3]) + "." if moved else "Your plan is updated.")
+    reply = f"Done. {row.title}." if row.title else "Done. Your plan is updated."
     _say(db, settings.ai_mode, reply, proposal_id=row.id)
     db.flush()
     return {"reply": reply, "proposal": _out(db, row)}

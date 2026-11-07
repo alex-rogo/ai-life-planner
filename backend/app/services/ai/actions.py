@@ -28,6 +28,17 @@ class CreateObligation(Schema):
     obligation: ObligationCreate
 
 
+class UpdateObligation(Schema):
+    kind: Literal["update_obligation"]
+    obligation_id: UUID
+    obligation: ObligationCreate
+
+
+class DeleteObligation(Schema):
+    kind: Literal["delete_obligation"]
+    obligation_id: UUID
+
+
 class SetPreference(Schema):
     kind: Literal["set_preference"]
     preferences: Preferences
@@ -50,6 +61,21 @@ class CompleteTask(Schema):
 class Clarify(Schema):
     kind: Literal["clarify"]
     question: str = Field(min_length=1, max_length=1000)
+    # Tappable answers shown as buttons under the message, each written as the user's reply.
+    options: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=4
+    )
+
+
+class Reply(Schema):
+    """Talk without changing anything: answers, advice, options."""
+
+    kind: Literal["reply"]
+    message: str = Field(min_length=1, max_length=4000)
+    # Tappable answers shown as buttons under the message, each written as the user's reply.
+    options: list[Annotated[str, Field(min_length=1, max_length=80)]] = Field(
+        default_factory=list, max_length=4
+    )
 
 
 Action = Annotated[
@@ -57,15 +83,18 @@ Action = Annotated[
     | CreateTask
     | UpdateTask
     | CreateObligation
+    | UpdateObligation
+    | DeleteObligation
     | SetPreference
     | Reschedule
     | CompleteTask
-    | Clarify,
+    | Clarify
+    | Reply,
     Field(discriminator="kind"),
 ]
 
 
 class ActionBatch(Schema):
-    actions: list[Action] = Field(min_length=1, max_length=8)
-    explanation: str = Field(min_length=1, max_length=2000)
+    actions: list[Action] = Field(min_length=1, max_length=12)
+    explanation: str = Field(default="", max_length=2000)
     defaults: list[str] = Field(default_factory=list, max_length=12)

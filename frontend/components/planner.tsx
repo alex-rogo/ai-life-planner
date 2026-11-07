@@ -138,6 +138,16 @@ export default function Planner() {
     const timer = setInterval(() => setTick(Date.now()), 60000);
     return () => clearInterval(timer);
   }, []);
+  // An open page keeps imported calendars current: every few minutes, refetch (the backend
+  // re-imports feeds older than 15 minutes) and refresh the sync status.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      setGeneration(g => g + 1);
+      api<SystemStatus>("/system").then(setSystem).catch(() => {});
+    }, 5 * 60000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -164,7 +174,7 @@ export default function Planner() {
     const message = text.trim();
     if (!message || busy) return;
     setAsking(message);
-    void run(() => api<ChatResult>("/assistant", "POST", { message, plan: { days: 7 } }));
+    void run(() => api<ChatResult>("/assistant", "POST", { message, plan: { days: 7 } }, 300000));
   };
   // Demo-only chips: empty the calendar, or reload the sample week with the demo Canvas feed.
   const sampleData = async (action: "clear" | "populate") => {
@@ -175,6 +185,7 @@ export default function Planner() {
     { label: "Load sample data", run: () => void run(() => sampleData("populate")) },
     { label: "Clear the calendar", confirm: "Click again to clear everything", run: () => void run(() => sampleData("clear")) },
   ] : [];
+  const check = (item: Upcoming, done: boolean) => void run(() => api(`/checklist/${encodeURIComponent(item.key)}`, "PUT", { done }));
   const decide = (id: string, action: "apply" | "discard" | "undo") => void run(() => api<Decision>(`/proposals/${id}/${action}`, "POST"));
   const answer = (id: string, decision: "confirm" | "dismiss") => void run(() => api(`/suggestions/${id}/decision`, "POST", { decision }));
   const href = (to: View, target: string) => target && target !== today ? `${PATHS[to]}?date=${target}` : PATHS[to];
@@ -221,9 +232,16 @@ export default function Planner() {
   const calendars = system?.calendars ?? [];
   const lastSync = calendars.map(c => c.last_synced_at).filter((x): x is string => !!x).sort().at(-1);
   const minutesAgo = lastSync ? Math.max(0, Math.round((now.getTime() - new Date(lastSync).getTime()) / 60000)) : null;
-  const synced = !calendars.length ? "" : calendars.some(c => c.error) ? " · Calendar sync issue"
+  // A calendar that failed to sync is shown loudly: its deadlines may be out of date.
+  const failing = calendars.filter(c => c.error);
+  const age = (stamp: string | null) => {
+    if (!stamp) return "nothing has been imported yet";
+    const minutes = Math.max(0, Math.round((now.getTime() - new Date(stamp).getTime()) / 60000));
+    return `what you see was imported ${minutes < 60 ? `${minutes} min` : minutes < 2880 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} days`} ago`;
+  };
+  const synced = !calendars.length ? "" : failing.length ? " · Calendar sync issue"
     : ` · Synced with ${calendars.length === 1 ? calendars[0].name : `${calendars.length} calendars`}${minutesAgo === null ? "" : minutesAgo < 1 ? " · just now" : ` · ${minutesAgo} min ago`}`;
-  const status = system ? `Local · ${system.ai_mode === "gemini" ? "Gemini" : "Demo assistant"}${system.demo_clock ? " · Demo clock" : ""}${synced}${prefs?.monitoring_enabled ? " · Activity on" : ""}` : "";
+  const status = system ? `Tomo · ${{ gemini: "Gemini", deepseek: "DeepSeek", demo: "Demo assistant" }[system.ai_mode]}${system.demo_clock ? " · Demo clock" : ""}${synced}${prefs?.monitoring_enabled ? " · Activity on" : ""}` : "";
 
   return (
     <div className="tomo">
@@ -246,12 +264,20 @@ export default function Planner() {
           <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" /></svg>
         </button>
       </header>
+      {failing.map(c => (
+        <div key={c.name} className="sync-warning" role="alert">
+          <strong>{c.name} couldn’t sync, so {age(c.last_success_at)}.</strong> {c.error}{" "}
+          <button className="link-btn" onClick={() => setDialog({ type: "settings" })}>Open calendar settings</button>
+        </div>
+      ))}
 
-      {loadError && !overview ? (
+      {!overview && !loadError ? (
+        <div className="columns"><div className="card panel center" role="status"><h2>Opening your planner…</h2><p className="meta">The first visit can take a little longer. Your calendar will appear here.</p></div></div>
+      ) : loadError && !overview ? (
         <div className="columns"><div className="card panel center"><h2>Can’t reach your planner</h2><p className="meta">{loadError}</p><button className="ghost" onClick={() => window.location.reload()}>Try again</button></div></div>
       ) : (
         <div className="columns">
-          <Sidebar view={view} overview={overview} onAddEvent={() => setDialog({ type: "event" })} onAddGoal={() => setDialog({ type: "goal" })}
+          <Sidebar view={view} overview={overview} today={today} busy={busy} onCheck={check} onAddEvent={() => setDialog({ type: "event" })} onAddGoal={() => setDialog({ type: "goal" })}
             onOpenGoal={id => setDialog({ type: "goal", goalId: id })} onOpenItem={item => void openItem(item)} />
           <main className={`center ${view}`}>
             <div className="intro">

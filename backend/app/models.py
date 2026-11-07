@@ -54,6 +54,11 @@ class Task(Base):
     recurrence: Mapped[str] = mapped_column(String(10), default="none")
     sessions_per_week: Mapped[int] = mapped_column(Integer, default=3)
     activity_apps: Mapped[list] = mapped_column(JSON, default=list)
+    # Optional local time-of-day window ("HH:MM") the task's sessions must fall inside.
+    window_start: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    window_end: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    # Optional weekdays (0 = Monday) the task's sessions may fall on, e.g. [4, 5, 6, 0].
+    days: Mapped[list | None] = mapped_column(JSON, nullable=True)
     category: Mapped[str] = mapped_column(String(12), default="focus", server_default="focus")
     created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow)
 
@@ -62,6 +67,7 @@ class Obligation(Base):
     __tablename__ = "obligations"
     __table_args__ = (
         CheckConstraint("kind IN ('commitment', 'appointment', 'interview', 'personal')"),
+        CheckConstraint("travel_minutes BETWEEN 0 AND 180"),
     )
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(200))
@@ -71,6 +77,9 @@ class Obligation(Base):
     start_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     end_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
     kind: Mapped[str] = mapped_column(String(12), default="commitment", server_default="commitment")
+    # Minutes to get there (and back), and how: Tomo adds the trips (see scheduler.travel_blocks).
+    travel_minutes: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    travel_mode: Mapped[str] = mapped_column(String(40), default="", server_default="")
 
 
 class Preference(Base):
@@ -115,6 +124,8 @@ class ScheduleSession(Base):
     status: Mapped[str] = mapped_column(String(12), default="planned")
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     credited_minutes: Mapped[int] = mapped_column(Integer, default=0)
+    # A trip to or from an event, derived from its travel time and rebuilt on every plan.
+    travel: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
 
 
 class ActivityEvent(Base):
@@ -155,6 +166,8 @@ class ChatMessage(Base):
     proposal_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
     )
+    # Tappable replies the assistant offered with this message.
+    options: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow, index=True)
 
 
@@ -193,7 +206,9 @@ class CalendarSource(Base):
     name: Mapped[str] = mapped_column(String(80))
     provider: Mapped[str] = mapped_column(String(12))
     url: Mapped[str] = mapped_column(Text)
+    # Last attempt (success or failure), and the last time the feed was actually imported.
     last_synced_at = mapped_column(UTCDateTime, nullable=True)
+    last_success_at = mapped_column(UTCDateTime, nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     created_at = mapped_column(UTCDateTime, nullable=False, default=utcnow)
 
@@ -219,3 +234,11 @@ class ExternalEvent(Base):
     location: Mapped[str] = mapped_column(String(300), default="")
     starts_at = mapped_column(UTCDateTime, nullable=False, index=True)
     ends_at = mapped_column(UTCDateTime, nullable=False, index=True)
+
+
+class CheckedItem(Base):
+    """A sidebar item the user checked off (see services/checklist.py for the key format)."""
+
+    __tablename__ = "checked_items"
+    key: Mapped[str] = mapped_column(String(120), primary_key=True)
+    checked_at = mapped_column(UTCDateTime, nullable=False, default=utcnow)

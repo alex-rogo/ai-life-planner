@@ -1,6 +1,6 @@
 """Summaries for the planner screen: what's coming up, goal progress, stats and briefs."""
 
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -11,6 +11,7 @@ from app.config import Settings
 from app.db import utcnow
 from app.models import ExternalEvent, Goal, Obligation, ScheduleSession, Task
 from app.services.ai.interpreter import DEMO_COMMANDS
+from app.services.checklist import checked, key
 from app.services.resources import preferences
 from app.services.scheduler import clock_minutes, local_midnight
 from app.services.upkeep import occurrences, sessions_between
@@ -61,6 +62,7 @@ def unscheduled_minutes(task: Task, sessions: list[ScheduleSession], now: dateti
 
 def _upcoming(db, tasks, goals, sessions, today, tz, now, externals):
     last = today + timedelta(days=UPCOMING_DAYS)
+    done = checked(db)
     items = []
     for obligation in db.scalars(select(Obligation).where(Obligation.kind != "commitment")):
         for day in list(occurrences(obligation, today, last))[:1]:
@@ -77,7 +79,10 @@ def _upcoming(db, tasks, goals, sessions, today, tz, now, externals):
                     "title": obligation.title,
                     "meta": f"{_clock(stamp, tz)} · {span(length)}",
                     "note": "",
+                    "at": stamp,
                     "obligation_id": obligation.id,
+                    "key": (item := key("obligation", obligation.id, day)),
+                    "done": item in done,
                 }
             )
     for goal in goals:
@@ -98,13 +103,17 @@ def _upcoming(db, tasks, goals, sessions, today, tz, now, externals):
                 "meta": f"{len(left)} tasks left · " + ("on track" if not gap else "behind"),
                 "note": f"Needs {span(gap)} · not scheduled" if gap else "",
                 "goal_id": goal.id,
+                "key": (item := key("goal", goal.id)),
+                "done": item in done,
             }
         )
     for task in tasks:
-        if task.goal_id or not task.deadline or task.deadline < now or task.status != "pending":
+        if task.goal_id or not task.deadline or task.status == "cancelled":
             continue
         day = task.deadline.astimezone(tz).date()
-        if day > last:
+        # Something due earlier today stays (as past due) until the day ends, so it never just
+        # vanishes from the list unseen.
+        if day < today or day > last:
             continue
         gap = unscheduled_minutes(task, sessions, now)
         left = task.duration_minutes - task.completed_minutes
@@ -114,27 +123,46 @@ def _upcoming(db, tasks, goals, sessions, today, tz, now, externals):
                 "date": day,
                 "when": _when(day, today),
                 "title": task.title,
-                "meta": f"Due {_clock(task.deadline, tz)} · {span(left)} of work left",
+                "meta": f"{_due(task.deadline, now, tz)} · "
+                + ("finished" if task.status == "completed" else f"{span(left)} of work left"),
+                "at": task.deadline,
                 "note": f"Needs {span(gap)} · not scheduled" if gap else "",
+                "key": key("task", task.id),
+                "done": task.status == "completed",
             }
         )
     for event in externals:
-        # Assignments from connected calendars (Canvas) are fixed deadlines.
+        # Assignments from connected calendars (Canvas) are fixed deadlines; all-day items (an
+        # exam day, a holiday) are listed too so nothing imported is only on the calendar strip.
         day = event.starts_at.astimezone(tz).date()
-        if event.kind != "deadline" or event.starts_at < now or day > last:
+        if event.kind == "event" or day < today or day > last:
+            continue
+        if event.kind == "all_day" and event.ends_at <= now:
             continue
         course = f" · {event.course}" if event.course else ""
+        due = "All day" if event.kind == "all_day" else _due(event.starts_at, now, tz)
         items.append(
             {
-                "kind": "Assignment",
+                "kind": "Assignment" if event.kind == "deadline" else "Appointment",
                 "date": day,
                 "when": _when(day, today),
                 "title": event.title,
-                "meta": f"Due {_clock(event.starts_at, tz)}{course}",
+                "meta": f"{due}{course}",
+                "at": event.starts_at,
                 "note": "",
+                "key": (item := key("event", event.id)),
+                "done": item in done,
             }
         )
-    return sorted(items, key=lambda item: item["date"])
+    # By day, then by time within the day (all-day and undated items first).
+    items.sort(key=lambda item: (item["date"], item.get("at") or datetime.min.replace(tzinfo=UTC)))
+    for item in items:
+        item.pop("at", None)
+    return items
+
+
+def _due(at: datetime, now: datetime, tz: ZoneInfo) -> str:
+    return f"{'Was due' if at <= now else 'Due'} {_clock(at, tz)}"
 
 
 def _goal_progress(goals, tasks, window, days, tz):

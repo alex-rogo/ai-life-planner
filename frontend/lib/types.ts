@@ -7,12 +7,13 @@ export interface Task {
   status: "pending" | "completed" | "cancelled"; deadline: string | null; not_before: string | null;
   min_session_minutes: number; max_session_minutes: number; category: Category;
   recurrence: "none" | "daily" | "weekly"; sessions_per_week: number; activity_apps: string[];
+  window_start?: string | null; window_end?: string | null;
 }
 export interface Session {
   id: string; title: string; starts_at: string; ends_at: string;
   status: "planned" | "completed" | "missed" | "skipped"; locked: boolean;
   task_id: string | null; obligation_id: string | null; credited_minutes: number;
-  category: Category | "fixed"; subtitle: string | null; deadline: string | null; change: string | null;
+  category: Category | "fixed"; subtitle: string | null; deadline: string | null; change: string | null; travel?: boolean;
   /** Imported from a connected calendar: fixed and read-only. */
   external?: boolean;
 }
@@ -25,17 +26,17 @@ export interface Preferences {
 export type EventKind = "commitment" | "appointment" | "interview" | "personal";
 export interface Obligation {
   id: string; title: string; kind: EventKind; weekdays: number[]; start_time: string; end_time: string;
-  start_date: string | null; end_date: string | null;
+  start_date: string | null; end_date: string | null; travel_minutes: number; travel_mode: string;
 }
-export interface Message { id: string; role: "user" | "assistant"; content: string; mode: string; proposal_id: string | null; }
+export interface Message { id: string; role: "user" | "assistant"; content: string; mode: string; proposal_id: string | null; options?: string[] | null; }
 export interface Suggestion { id: string; session_id: string; message: string; remaining_minutes: number; status: string; }
 export type Provider = "canvas" | "google" | "outlook" | "apple" | "other" | "demo";
 export interface CalendarSource {
-  id: string; name: string; provider: Provider; url_hint: string; last_synced_at: string | null; last_error: string;
+  id: string; name: string; provider: Provider; url_hint: string; last_synced_at: string | null; last_success_at: string | null; last_error: string; imported_file?: boolean;
   events: number; deadlines: number; all_day: number;
 }
 export interface SystemStatus {
-  now: string; demo_clock: boolean; sample_data_tools?: boolean; calendars: { name: string; provider: Provider; last_synced_at: string | null; error: boolean }[]; ai_mode: "demo" | "gemini"; gemini_configured: boolean; gemini_model: string; monitoring_enabled: boolean;
+  now: string; demo_clock: boolean; sample_data_tools?: boolean; calendars: { name: string; provider: Provider; last_synced_at: string | null; last_success_at: string | null; error: string }[]; ai_mode: "demo" | "gemini" | "deepseek"; gemini_configured: boolean; gemini_model: string; monitoring_enabled: boolean;
   agent_connected?: boolean; agent_token_configured?: boolean;
 }
 export interface Change { kind: string; title: string; detail: string; }
@@ -49,7 +50,7 @@ export interface Decision { reply: string; proposal: Proposal | null; }
 export type UpcomingKind = "Appointment" | "Interview" | "Project" | "Personal" | "Assignment";
 export interface Upcoming {
   kind: UpcomingKind; date: string; when: string; title: string; meta: string; note: string;
-  obligation_id: string | null; goal_id: string | null;
+  obligation_id: string | null; goal_id: string | null; key: string; done: boolean;
 }
 export interface GoalProgress { id: string; title: string; pct: number; progress: string; meta: string; }
 export interface Overview {

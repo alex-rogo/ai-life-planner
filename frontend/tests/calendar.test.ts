@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { TIMING, busyHours, choreograph, fitUnit, matchKeys, hourLabel, hourScale, isoWeek, layout, rangeFor, shift, shortClock, weekStart, withPreview, yAt } from "../lib/calendar";
+import { TIMING, assignLanes, busyHours, choreograph, fitUnit, matchKeys, hourLabel, hourScale, isoWeek, layout, rangeFor, shift, shortClock, weekStart, withPreview, yAt } from "../lib/calendar";
 import type { Session } from "../lib/types";
 
 const TZ = "America/Los_Angeles";
@@ -88,7 +88,7 @@ it("carries visual identity across a change, even when the solver recreates a ro
 it("stages a change: strike-and-fade removals, shifts with the scale, moves one by one, then new blocks", () => {
   const place = (key: string, col: number, start: number, end: number, title = "Q4 budget review") => ({
     session: session({ id: key, title }), key, col, start, end, top: start - 420, height: end - start,
-    done: false, proposed: false, tag: "", kind: "plain" as const,
+    done: false, proposed: false, tag: "", kind: "plain" as const, lane: 0, lanes: 1,
   });
   const before = [place("gone", 0, 600, 660), place("same", 0, 480, 540), place("travels", 0, 720, 780)];
   const after = [
@@ -114,4 +114,12 @@ it("stages a change: strike-and-fade removals, shifts with the scale, moves one 
   expect(Math.max(...moved.cues.map(c => c.delay))).toBeLessThanOrEqual(TIMING.shift + TIMING.moveSpread);
   // Nothing changed: everything stays.
   expect(choreograph([after[0]], [after[0]]).cues.map(c => c.phase)).toEqual(["stay"]);
+});
+
+it("puts overlapping blocks side by side and leaves the rest full width", () => {
+  const b = (start: number, end: number) => ({ start, end, lane: 0, lanes: 1 });
+  const [bus, cls, home, later] = assignLanes([b(570, 750), b(600, 720), b(720, 780), b(900, 960)]);
+  expect([bus.lane, cls.lane, home.lane]).toEqual([0, 1, 1]);
+  expect([bus.lanes, cls.lanes, home.lanes]).toEqual([2, 2, 2]);
+  expect([later.lane, later.lanes]).toEqual([0, 1]);
 });

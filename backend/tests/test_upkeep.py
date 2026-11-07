@@ -94,6 +94,54 @@ def test_overview_lists_events_deadlines_and_goal_progress(client, db):
     assert len(week["prompts"]) == 3
 
 
+def test_checking_off_items_in_the_task_list(client, db):
+    tz = ZoneInfo(db.get(Preference, 1).timezone)
+    day = utcnow().astimezone(tz).date() + timedelta(days=2)
+    client.post(
+        "/api/obligations",
+        json={
+            "title": "Interview",
+            "kind": "interview",
+            "weekdays": [day.weekday()],
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "start_date": day.isoformat(),
+            "end_date": day.isoformat(),
+        },
+    )
+    deadline = (utcnow() + timedelta(days=4)).isoformat()
+    task = client.post(
+        "/api/tasks", json={"title": "Essay", "duration_minutes": 60, "deadline": deadline}
+    ).json()
+
+    def status():
+        return next(t["status"] for t in client.get("/api/tasks").json() if t["id"] == task["id"])
+
+    def items():
+        return {i["title"]: i for i in client.get("/api/overview").json()["upcoming"]}
+
+    keys = {title: item["key"] for title, item in items().items()}
+    assert keys["Essay"] == f"task:{task['id']}"
+    assert keys["Interview"].endswith(day.isoformat())
+    assert not any(item["done"] for item in items().values())
+
+    for title in ("Essay", "Interview"):
+        assert client.put(f"/api/checklist/{keys[title]}", json={"done": True}).status_code == 204
+    after = items()
+    assert after["Essay"]["done"] and after["Interview"]["done"]
+    # A finished task stops being planned, and stays in the list crossed out.
+    assert status() == "completed"
+    assert not [s for s in client.get("/api/sessions").json() if s["task_id"] == task["id"]]
+
+    assert client.put(f"/api/checklist/{keys['Essay']}", json={"done": False}).status_code == 204
+    assert (
+        client.put(f"/api/checklist/{keys['Interview']}", json={"done": False}).status_code == 204
+    )
+    assert not any(item["done"] for item in items().values())
+    assert status() == "pending"
+    assert client.put("/api/checklist/task:nope", json={"done": True}).status_code == 422
+
+
 def test_demo_clock_shifts_now_and_requires_an_offset(monkeypatch):
     from datetime import UTC, datetime
 

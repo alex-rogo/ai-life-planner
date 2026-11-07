@@ -47,9 +47,13 @@ export function EventDialog({ timezone, today, obligation, onClose, onSaved }: {
   const [start, setStart] = useState(obligation?.start_time ?? "09:00");
   const [end, setEnd] = useState(obligation?.end_time ?? "10:00");
   const [weekly, setWeekly] = useState(obligation ? obligation.end_date === null : false);
+  const [travel, setTravel] = useState(obligation?.travel_minutes ?? 0);
+  const [mode, setMode] = useState(obligation?.travel_mode ?? "");
   const { busy, error, submit } = useSubmit(onSaved);
   const save = () => submit(() => {
-    const body = { title, kind, start_time: start, end_time: end, weekdays: [weekday(date)], start_date: date, end_date: weekly ? null : date };
+    // A weekly event on several days (Mon and Wed class) keeps its days; editing never drops one.
+    const days = weekly && obligation && obligation.weekdays.length > 1 ? obligation.weekdays : [weekday(date)];
+    const body = { title, kind, start_time: start, end_time: end, weekdays: days, start_date: date, end_date: weekly ? null : date, travel_minutes: travel, travel_mode: travel ? mode : "" };
     return obligation ? api(`/obligations/${obligation.id}`, "PUT", body) : api("/obligations", "POST", body);
   });
   return (
@@ -62,7 +66,11 @@ export function EventDialog({ timezone, today, obligation, onClose, onSaved }: {
         <label>Ends<input className="field" type="time" required step={900} value={end} onChange={e => setEnd(e.target.value)} /></label>
       </div>
       <label className="check"><input type="checkbox" checked={weekly} onChange={e => setWeekly(e.target.checked)} />Repeats every week on this day</label>
-      <span className="hint">Times are in {timezone}. Tomo plans flexible work around this and replans your week when you save.</span>
+      <div className="row">
+        <label>Travel each way (min)<input className="field" type="number" min={0} max={180} step={5} value={travel} onChange={e => setTravel(Math.max(0, Math.min(180, Number(e.target.value) || 0)))} /></label>
+        <label>How you get there<input className="field" maxLength={40} value={mode} onChange={e => setMode(e.target.value)} placeholder="Bus" disabled={!travel} /></label>
+      </div>
+      <span className="hint">Times are in {timezone}. Tomo plans flexible work around this and replans your week when you save. With travel time, Tomo adds a trip there before your first event of the day and one home after your last.</span>
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="actions">
         {obligation && <button type="button" className="danger" disabled={busy} onClick={() => void submit(() => api(`/obligations/${obligation.id}`, "DELETE"))}>Delete</button>}
@@ -149,6 +157,23 @@ function ago(stamp: string | null, now: string | undefined): string {
   return minutes < 1 ? "synced just now" : minutes < 60 ? `synced ${minutes} min ago` : `synced ${Math.round(minutes / 60)} h ago`;
 }
 
+/** Download the plan as an .ics file for Google Calendar, Apple Calendar or Outlook. */
+export function ExportCalendar() {
+  const [weeks, setWeeks] = useState(8);
+  const [imported, setImported] = useState(false);
+  return (
+    <section className="connections" aria-label="Export">
+      <h3>Export</h3>
+      <p className="hint">Download your schedule as an .ics file and import it into Google Calendar, Apple Calendar or Outlook. Classes, other events and bus trips cover the weeks you pick; habit sessions cover what Tomo has planned so far (about a week). It’s a snapshot, so export again after changes.</p>
+      <div className="row">
+        <label>Weeks<select className="field" value={weeks} onChange={e => setWeeks(Number(e.target.value))}>{[1, 2, 4, 8, 12, 16].map(w => <option key={w} value={w}>{w} {w === 1 ? "week" : "weeks"}</option>)}</select></label>
+        <label className="check" style={{ alignSelf: "end" }}><input type="checkbox" checked={imported} onChange={e => setImported(e.target.checked)} />Include imported calendars (Canvas…)</label>
+      </div>
+      <div className="actions"><a className="primary download" href={`/api/export.ics?weeks=${weeks}&imported=${imported}`} download="tomo-schedule.ics">Download .ics</a></div>
+    </section>
+  );
+}
+
 /** Connected calendar feeds: imported events are fixed blocks; assignments are due markers. */
 export function CalendarConnections({ demo, now, onChanged }: { demo: boolean; now?: string; onChanged: () => void | Promise<void> }) {
   const [list, setList] = useState<CalendarSource[] | null>(null);
@@ -172,6 +197,10 @@ export function CalendarConnections({ demo, now, onChanged }: { demo: boolean; n
     void act("add", async () => { await api("/calendars", "POST", { provider, name, url }); setUrl(""); setName(""); });
   };
   const choice = PROVIDERS.find(p => p.value === provider)!;
+  const importFile = (file: File | undefined) => {
+    if (!file || working) return;
+    void act("import", async () => api("/calendars/import", "POST", { filename: file.name, content: await file.text() }, 120000));
+  };
   return (
     <section className="connections" aria-label="Connected calendars">
       <h3>Connected calendars</h3>
@@ -183,10 +212,10 @@ export function CalendarConnections({ demo, now, onChanged }: { demo: boolean; n
             <span className="title-sm">{c.name}</span>
             {c.last_error
               ? <span className="sync-error">{c.last_error}</span>
-              : <span className="meta">{c.events} events · {c.deadlines} assignments{c.all_day ? ` · ${c.all_day} all-day` : ""} · {ago(c.last_synced_at, now)}</span>}
+              : <span className="meta">{c.events} events · {c.deadlines} assignments{c.all_day ? ` · ${c.all_day} all-day` : ""} · {c.imported_file ? ago(c.last_synced_at, now).replace("synced", "imported") : ago(c.last_synced_at, now)}</span>}
             <span className="meta mono">{c.url_hint}</span>
           </div>
-          <button type="button" className="ghost" disabled={!!working} onClick={() => void act(c.id, () => api(`/calendars/${c.id}/sync`, "POST"))}>{working === c.id ? "Syncing…" : "Sync now"}</button>
+          {!c.imported_file && <button type="button" className="ghost" disabled={!!working} onClick={() => void act(c.id, () => api(`/calendars/${c.id}/sync`, "POST"))}>{working === c.id ? "Syncing…" : "Sync now"}</button>}
           {confirming === c.id
             ? <button type="button" className="danger small" disabled={!!working} onClick={() => void act(`remove-${c.id}`, () => api(`/calendars/${c.id}`, "DELETE"))}>Remove</button>
             : <button type="button" className="x" aria-label={`Remove ${c.name}`} onClick={() => setConfirming(c.id)}>×</button>}
@@ -207,6 +236,14 @@ export function CalendarConnections({ demo, now, onChanged }: { demo: boolean; n
           {demo && <button type="button" className="secondary" disabled={!!working} onClick={() => void act("demo", () => api("/calendars", "POST", { provider: "demo", url: "demo://canvas" }))}>{working === "demo" ? "Adding…" : "Try the demo Canvas feed"}</button>}
           <button type="button" className="primary" disabled={!url.trim() || !!working} onClick={add}>{working === "add" ? "Connecting…" : "Connect"}</button>
         </div>
+      </div>
+      <div className="connect">
+        <span className="hint">No feed link? Import an .ics file exported from Google Calendar, Outlook, Apple Calendar or another app. Its events join your calendar the same way, without syncing; import the updated file again to refresh it.</span>
+        <label className="secondary file-pick">
+          {working === "import" ? "Importing…" : "Import .ics file"}
+          <input type="file" accept=".ics,text/calendar" className="sr-only" disabled={!!working}
+            onChange={e => { importFile(e.target.files?.[0]); e.target.value = ""; }} />
+        </label>
       </div>
       {error && <div className="form-error" role="alert">{error}</div>}
     </section>
@@ -236,6 +273,7 @@ export function SettingsDialog({ preferences, system, onClose, onSaved, onCalend
       <label className="check"><input type="checkbox" checked={form.monitoring_enabled} onChange={e => set("monitoring_enabled", e.target.checked)} />Enable activity monitoring</label>
       <span className="hint">The optional Windows companion reports the foreground app and idle time so Tomo can suggest replanning. {companion}</span>
       <CalendarConnections demo={!!system && (system.ai_mode === "demo" || system.demo_clock)} now={system?.now} onChanged={onCalendarsChanged} />
+      <ExportCalendar />
       {error && <div className="form-error" role="alert">{error}</div>}
       <div className="actions">
         <button type="button" className="secondary" onClick={onClose}>Cancel</button>

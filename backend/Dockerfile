@@ -4,7 +4,8 @@ COPY pyproject.toml .
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini .
+COPY start.sh .
 COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock && pip install --no-deps .
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "start.sh"]
