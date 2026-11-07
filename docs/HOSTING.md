@@ -11,7 +11,8 @@ The website and API deploy from the same GitHub branch.
    `tomoplanner.app`. Enable the sign-in methods you want to offer. Clerk's
    **API Keys** page contains the production Publishable Key (`pk_live_...`)
    and JWT public key. The backend verifies tokens with the public key, so it
-   does not need a Clerk Secret Key.
+   does not need a Clerk Secret Key. Name the Clerk application **Tomo** so
+   authentication emails and provider prompts use the right name.
 2. Keep the current Railway `/data` volume. The old shared demo database may
    stay on that volume; new private workspaces use `/data/workspaces`. Existing
    shared sample data is not moved into users' accounts.
