@@ -84,7 +84,8 @@ def test_clerk_session_signature_and_origin_are_checked(tmp_path, monkeypatch):
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     ).decode()
     settings = Settings(
-        workspace_root=str(tmp_path), proxy_shared_secret="secret", clerk_jwt_key=public,
+        workspace_root=str(tmp_path), proxy_shared_secret="secret",
+        clerk_jwt_key='"' + public.replace("\n", "\\n") + '"',
         clerk_authorized_parties="https://tomoplanner.app",
     )
     monkeypatch.setattr(database, "get_settings", lambda: settings)

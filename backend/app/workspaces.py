@@ -70,10 +70,11 @@ def _clerk_user(request: Request, settings: Settings) -> str:
     if not settings.clerk_jwt_key:
         raise HTTPException(503, "Sign-in is not configured yet.")
     parties = [value.strip() for value in settings.clerk_authorized_parties.split(",") if value.strip()]
+    jwt_key = settings.clerk_jwt_key.strip().strip('"').replace("\\n", "\n")
     state = authenticate_request(
         request,
         AuthenticateRequestOptions(
-            jwt_key=settings.clerk_jwt_key.replace("\\n", "\n"),
+            jwt_key=jwt_key,
             authorized_parties=parties,
             accepts_token=["session_token"],
         ),
